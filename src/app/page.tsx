@@ -14,7 +14,7 @@ import {
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
-  BookOpen, Lightbulb, Target
+  Target, HelpCircle, AlertTriangle
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -178,6 +178,25 @@ export default function Home() {
   // Tile pop animation tracking
   const [poppingTile, setPoppingTile] = useState<string | null>(null)
 
+  // Solver status (derived from health checks)
+  const [solverOnline, setSolverOnline] = useState<boolean | null>(null) // null = unknown/starting
+  const [solverLastChecked, setSolverLastChecked] = useState<number>(0)
+
+  // Solve progress timer
+  const [solveTimerMs, setSolveTimerMs] = useState(0)
+
+  // Result sort
+  const [resultSort, setResultSort] = useState<'default' | 'az' | 'za' | 'shortest' | 'longest'>('default')
+
+  // Keyboard shortcut help
+  const [showShortcuts, setShowShortcuts] = useState(false)
+
+  // Copy individual result
+  const [copiedResult, setCopiedResult] = useState<string | null>(null)
+
+  // Celebration effect
+  const [celebrating, setCelebrating] = useState(false)
+
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
   const boardRef = useRef<HTMLDivElement>(null)
@@ -187,6 +206,30 @@ export default function Home() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode)
   }, [darkMode])
+
+  // ─── Solve progress timer ──────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!solving) {
+      setSolveTimerMs(0)
+      return
+    }
+    const start = Date.now()
+    const interval = setInterval(() => {
+      setSolveTimerMs(Date.now() - start)
+    }, 100)
+    return () => clearInterval(interval)
+  }, [solving])
+
+  // ─── Celebration effect ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (solveResult && solveResult.results.length > 0) {
+      setCelebrating(true)
+      const timer = setTimeout(() => setCelebrating(false), 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [solveResult])
 
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
@@ -201,17 +244,29 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json()
         setHealth(data.data || data)
+        setSolverOnline(true)
+      } else {
+        // Keep last known health info but mark as offline
+        setSolverOnline(false)
       }
     } catch {
-      // Health endpoint might not be available
+      // Keep last known health info but mark as offline
+      setSolverOnline(false)
     }
+    setSolverLastChecked(Date.now())
   }, [])
 
+  // Adaptive health check: 15s initially, 30s when online, 60s when offline
   useEffect(() => {
-    fetchHealth()
-    const interval = setInterval(fetchHealth, 30000)
+    fetchHealth() // Check immediately on mount
+    const getInterval = () => {
+      if (solverOnline === null) return 15000 // Starting: check every 15s
+      if (solverOnline) return 30000 // Online: every 30s
+      return 60000 // Offline: every 60s
+    }
+    const interval = setInterval(fetchHealth, getInterval())
     return () => clearInterval(interval)
-  }, [fetchHealth])
+  }, [fetchHealth, solverOnline])
 
   // ─── Update row lengths ────────────────────────────────────────────────────
 
@@ -596,18 +651,39 @@ export default function Home() {
 
   const filteredResults = useMemo(() => {
     if (!solveResult) return []
-    if (!resultFilter.trim()) return solveResult.results
-    const lowerFilter = resultFilter.toLowerCase().replace(/×/g, '*').replace(/÷/g, '/')
-    return solveResult.results.filter(expr =>
-      expr.toLowerCase().includes(lowerFilter) ||
-      formatExpression(expr).toLowerCase().includes(resultFilter.toLowerCase())
-    )
-  }, [solveResult, resultFilter])
+    let results = solveResult.results
+    if (resultFilter.trim()) {
+      const lowerFilter = resultFilter.toLowerCase().replace(/×/g, '*').replace(/÷/g, '/')
+      results = results.filter(expr =>
+        expr.toLowerCase().includes(lowerFilter) ||
+        formatExpression(expr).toLowerCase().includes(resultFilter.toLowerCase())
+      )
+    }
+    // Apply sort
+    switch (resultSort) {
+      case 'az':
+        return [...results].sort((a, b) => a.localeCompare(b))
+      case 'za':
+        return [...results].sort((a, b) => b.localeCompare(a))
+      case 'shortest':
+        return [...results].sort((a, b) => a.length - b.length)
+      case 'longest':
+        return [...results].sort((a, b) => b.length - a.length)
+      default:
+        return results
+    }
+  }, [solveResult, resultFilter, resultSort])
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300">
+    <div className="min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300 dark:[background-image:radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.03),transparent_75%)]">
+      <style>{`
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
       {/* ─── Header ──────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -624,13 +700,31 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Engine status */}
-            {health && (
-              <Badge variant="secondary" className="hidden sm:flex items-center gap-1.5 text-xs">
-                <Cpu className="w-3 h-3" />
-                {health.cpu_cores} cores · {health.parallel_threads} threads
-              </Badge>
-            )}
+            {/* Engine status indicator */}
+            <Badge
+              variant="secondary"
+              className={`hidden sm:flex items-center gap-1.5 text-xs ${
+                solverOnline === null
+                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200 dark:border-amber-800'
+                  : solverOnline
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 border-red-200 dark:border-red-800'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${
+                solverOnline === null
+                  ? 'bg-amber-500 animate-pulse'
+                  : solverOnline
+                    ? 'bg-emerald-500'
+                    : 'bg-red-500'
+              }`} />
+              {solverOnline === null
+                ? 'Starting...'
+                : solverOnline
+                  ? `${health?.cpu_cores || '?'} cores · ${health?.parallel_threads || '?'} threads`
+                  : `Offline${solverLastChecked ? ` · ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
+              }
+            </Badge>
             <Button
               variant="ghost"
               size="icon"
@@ -719,6 +813,52 @@ export default function Home() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Presets */}
+            <div className="flex flex-wrap gap-1.5">
+              <span className="text-xs text-zinc-500 dark:text-zinc-400 self-center mr-1">Presets:</span>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+                setExpressionLength(5)
+                updateRowLengths(5)
+                setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]])
+                setSelectedCell(null)
+                setSolveResult(null)
+              }}>
+                1+1=2
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+                setExpressionLength(6)
+                updateRowLengths(6)
+                setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]])
+                setSelectedCell(null)
+                setSolveResult(null)
+              }}>
+                Starter Len 6
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+                setExpressionLength(8)
+                updateRowLengths(8)
+                setRows([
+                  [{char:'1',state:'correct'},{char:'2',state:'present'},{char:'+',state:'correct'},{char:'3',state:'absent'},{char:'=',state:'correct'},{char:'5',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'}],
+                  [{char:'2',state:'present'},{char:'\u00d7',state:'correct'},{char:'3',state:'correct'},{char:'=',state:'correct'},{char:'6',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'},{char:'',state:'empty'}],
+                ])
+                setSelectedCell(null)
+                setSolveResult(null)
+              }}>
+                Hard Mode
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+                setExpressionLength(6)
+                updateRowLengths(6)
+                setRows([createEmptyRow(6)])
+                setSelectedCell(null)
+                setSolveResult(null)
+                setSolveError(null)
+                setResultFilter('')
+              }}>
+                Full Clear
+              </Button>
+            </div>
 
             {/* Import Panel */}
             {showImport && (
@@ -919,12 +1059,13 @@ export default function Home() {
                                 flex items-center justify-center transition-all duration-150 select-none
                                 relative
                                 ${STATE_COLORS[tile.state]}
-                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md' : ''}
+                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md animate-pulse' : ''}
                                 ${isPopping ? 'scale-110' : ''}
                                 hover:scale-105 active:scale-95
                               `}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
                               onContextMenu={(e) => handleTileContextMenu(e, rowIdx, colIdx)}
+                              title={`Position ${colIdx + 1}`}
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
@@ -967,6 +1108,23 @@ export default function Home() {
             {/* Keyboard */}
             <Card>
               <CardContent className="pt-5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={() => setShowShortcuts(!showShortcuts)}
+                    title="Keyboard shortcuts"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
+                  </Button>
+                </div>
+                {showShortcuts && (
+                  <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150">
+                    ←→ Navigate &nbsp;|&nbsp; ↑↓ Row &nbsp;|&nbsp; ⌫ Delete &nbsp;|&nbsp; Esc Deselect &nbsp;|&nbsp; Click: Select/Cycle
+                  </div>
+                )}
                 <div className="space-y-1.5">
                   {KEYBOARD_CHARS.map((line, lineIdx) => (
                     <div key={lineIdx} className="flex justify-center gap-1">
@@ -1005,9 +1163,29 @@ export default function Home() {
               </CardContent>
             </Card>
 
+            {/* Constraint validation warnings */}
+            {(() => {
+              if (solving) return null
+              const warnings: string[] = []
+              const hasEqualsInAnyRow = rows.some(row => row.some(t => t.char === '='))
+              const hasAnyConstraints = rows.some(row => row.some(t => t.char !== ''))
+              if (hasAnyConstraints && !hasEqualsInAnyRow) {
+                warnings.push('No "=" found in constraints. Results may be very large.')
+              }
+              if (!hasAnyConstraints && expressionLength < 5) {
+                warnings.push('Short expression with no constraints will return many results.')
+              }
+              return warnings.map((w, i) => (
+                <div key={i} className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-700 dark:text-amber-400">{w}</p>
+                </div>
+              ))
+            })()}
+
             {/* Solve Button - with gradient border effect */}
             <div className="relative group">
-              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300" />
+              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
               <Button
                 className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl"
                 onClick={solve}
@@ -1017,7 +1195,7 @@ export default function Home() {
                 {solving ? (
                   <>
                     <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
-                    Solving with Rust Engine...
+                    Solving... {(solveTimerMs / 1000).toFixed(1)}s
                   </>
                 ) : (
                   <>
@@ -1117,7 +1295,7 @@ export default function Home() {
                 <CardContent className="pt-5 space-y-3">
                   <div className="flex items-center gap-2">
                     <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
-                    <span className="text-sm font-medium">Rust engine solving...</span>
+                    <span className="text-sm font-medium">Rust engine solving... {(solveTimerMs / 1000).toFixed(1)}s</span>
                   </div>
                   <Progress value={undefined} className="h-2" />
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -1129,16 +1307,22 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <Card>
+              <Card className="animate-in slide-in-from-bottom-4 duration-500">
                 <CardHeader className="pb-3">
                   <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
                     <CardTitle className="text-base">Results</CardTitle>
-                    <Badge variant="secondary" className="ml-auto">
+                    <Badge
+                      variant="secondary"
+                      className={`ml-auto relative ${celebrating ? 'animate-bounce' : ''}`}
+                    >
                       {solveResult.results.length >= MAX_RESULTS_DEFAULT
                         ? `${MAX_RESULTS_DEFAULT.toLocaleString()}+ found`
                         : `${solveResult.results.length.toLocaleString()} found`
                       }
+                      {celebrating && (
+                        <span className="absolute -top-2 -right-2 text-sm">\u2728</span>
+                      )}
                     </Badge>
                   </div>
                   {solveResult.results.length >= MAX_RESULTS_DEFAULT && (
@@ -1163,25 +1347,38 @@ export default function Home() {
                         </p>
                       ) : (
                         <div className="space-y-2 mt-2">
-                          {/* Search/Filter */}
-                          <div className="relative">
-                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
-                            <Input
-                              placeholder="Filter solutions... (e.g. 1+2=3)"
-                              value={resultFilter}
-                              onChange={(e) => setResultFilter(e.target.value)}
-                              className="h-8 text-sm pl-8 pr-8"
-                            />
-                            {resultFilter && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="absolute right-0.5 top-1/2 -translate-y-1/2 h-7 w-7"
-                                onClick={() => setResultFilter('')}
-                              >
-                                <X className="w-3 h-3" />
-                              </Button>
-                            )}
+                          {/* Search/Filter + Sort */}
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                              <Input
+                                placeholder="Filter solutions... (e.g. 1+2=3)"
+                                value={resultFilter}
+                                onChange={(e) => setResultFilter(e.target.value)}
+                                className="h-8 text-sm pl-8 pr-8"
+                              />
+                              {resultFilter && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-0.5 top-1/2 -translate-y-1/2 h-7 w-7"
+                                  onClick={() => setResultFilter('')}
+                                >
+                                  <X className="w-3 h-3" />
+                                </Button>
+                              )}
+                            </div>
+                            <select
+                              className="h-8 text-xs border border-zinc-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 px-2 text-zinc-600 dark:text-zinc-400"
+                              value={resultSort}
+                              onChange={(e) => setResultSort(e.target.value as typeof resultSort)}
+                            >
+                              <option value="default">Default</option>
+                              <option value="az">A→Z</option>
+                              <option value="za">Z→A</option>
+                              <option value="shortest">Shortest</option>
+                              <option value="longest">Longest</option>
+                            </select>
                           </div>
 
                           {/* Result count info */}
@@ -1209,6 +1406,19 @@ export default function Home() {
                                 {expr === solveResult.recommended && (
                                   <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                  onClick={async () => {
+                                    await navigator.clipboard.writeText(formatExpression(expr))
+                                    setCopiedResult(expr)
+                                    setTimeout(() => setCopiedResult(null), 1500)
+                                  }}
+                                  title="Copy expression"
+                                >
+                                  {copiedResult === expr ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-zinc-400" />}
+                                </Button>
                               </div>
                             ))}
                             {filteredResults.length > 500 && (
@@ -1314,112 +1524,52 @@ export default function Home() {
               </Card>
             )}
 
-            {/* Empty state - Enhanced "Ready to Solve" placeholder */}
+            {/* Empty state - Compact "Ready to Solve" placeholder */}
             {!solveResult && !solving && (
-              <Card>
-                <CardContent className="pt-6">
-                  {/* Hero section */}
-                  <div className="text-center mb-6">
-                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/30 dark:to-teal-900/30 flex items-center justify-center border border-emerald-200 dark:border-emerald-800">
-                      <Zap className="w-8 h-8 text-emerald-500" />
+              <Card className="transition-all duration-500">
+                <CardContent className="pt-5">
+                  <div className="text-center mb-4">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/30 dark:to-teal-900/30 flex items-center justify-center border border-emerald-200 dark:border-emerald-800">
+                      <Zap className="w-6 h-6 text-emerald-500" />
                     </div>
-                    <h3 className="text-lg font-semibold mb-1">Ready to Solve</h3>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto">
-                      Enter your constraints on the board, then hit Solve to find all valid equations.
+                    <h3 className="text-base font-semibold mb-1">Ready to Solve</h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Enter constraints on the board, then hit Solve
                     </p>
                   </div>
 
-                  <Separator className="mb-4" />
-
-                  {/* Quick-start tutorial */}
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-semibold flex items-center gap-2">
-                      <BookOpen className="w-4 h-4 text-emerald-500" />
-                      Quick-Start Guide
-                    </h4>
-
-                    {/* Step 1 */}
-                    <div className="flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">1</span>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">Set expression length</p>
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Choose how many characters your equation has (e.g. 6 for <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">1+2=3</code> which is length 5)</p>
-                      </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">1</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Set length &amp; enter chars</span>
                     </div>
-
-                    {/* Step 2 */}
-                    <div className="flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">2</span>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">Enter known characters</p>
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Click a tile to select it, then type a character or click the on-screen keyboard</p>
-                      </div>
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">2</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Cycle colors: 🟩→🟨→⬛</span>
                     </div>
-
-                    {/* Step 3 */}
-                    <div className="flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">3</span>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">Set tile colors (states)</p>
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Click a filled tile again to cycle: <span className="inline-block w-3 h-3 rounded bg-emerald-500 align-middle" /> Correct → <span className="inline-block w-3 h-3 rounded bg-amber-400 align-middle" /> Present → <span className="inline-block w-3 h-3 rounded bg-zinc-400 align-middle" /> Absent</p>
-                      </div>
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
+                      <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">3</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Hit Solve!</span>
                     </div>
-
-                    {/* Step 4 */}
-                    <div className="flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">4</span>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">Hit Solve!</p>
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">The Rust engine will search millions of expressions per second to find all matching solutions</p>
-                      </div>
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
+                      <Target className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                      <span className="text-zinc-600 dark:text-zinc-400">Use <strong>Probabilities</strong> for best guess</span>
                     </div>
+                  </div>
 
-                    <Separator />
+                  <Separator className="mb-3" />
 
-                    {/* Example game state */}
-                    <div>
-                      <h5 className="text-xs font-semibold flex items-center gap-1.5 mb-2">
-                        <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
-                        Example: Length 6 with first guess
-                      </h5>
-                      <div className="flex justify-center gap-0.5 mb-2">
-                        {/* Example tiles: 1+1=2! → but let's show a realistic example */}
-                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">1</div>
-                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">+</div>
-                        <div className="w-9 h-9 rounded-lg border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-base flex items-center justify-center">2</div>
-                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">=</div>
-                        <div className="w-9 h-9 rounded-lg border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-base flex items-center justify-center">3</div>
-                        <div className="w-9 h-9 rounded-lg border-2 bg-white text-zinc-800 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-600 font-mono font-bold text-base flex items-center justify-center"></div>
-                      </div>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">
-                        Green = right position, Yellow = wrong position, Gray = not in equation
-                      </p>
+                  {/* Example game state */}
+                  <div className="text-center">
+                    <p className="text-[10px] text-zinc-400 mb-1.5">Example: 1+2=3 with constraints</p>
+                    <div className="flex justify-center gap-0.5">
+                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">1</div>
+                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">+</div>
+                      <div className="w-8 h-8 rounded border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-sm flex items-center justify-center">2</div>
+                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">=</div>
+                      <div className="w-8 h-8 rounded border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-sm flex items-center justify-center">3</div>
                     </div>
-
-                    <Separator />
-
-                    {/* Tips */}
-                    <div>
-                      <h5 className="text-xs font-semibold flex items-center gap-1.5 mb-2">
-                        <Target className="w-3.5 h-3.5 text-emerald-500" />
-                        Pro Tips
-                      </h5>
-                      <ul className="text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
-                        <li>&#8226; Start with no constraints to see all possibilities, then narrow down</li>
-                        <li>&#8226; Use the <strong>Probabilities</strong> tab to pick the most informative guess</li>
-                        <li>&#8226; The <strong>Best</strong> recommendation maximizes information gain</li>
-                        <li>&#8226; Results are limited to {MAX_RESULTS_DEFAULT.toLocaleString()} to prevent crashes</li>
-                        <li>&#8226; Use <kbd className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[10px]">←→↑↓</kbd> to navigate, <kbd className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[10px]">Esc</kbd> to deselect</li>
-                      </ul>
-                    </div>
+                    <p className="text-[10px] text-zinc-400 mt-1">🟩 Right spot · 🟨 Wrong spot · ⬛ Not in equation</p>
                   </div>
                 </CardContent>
               </Card>
