@@ -6,11 +6,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
-use crate::solver::{CharProbability, SolveRequest, SolveResult, SumzleSolver, TileData};
+use crate::solver::{CharProbability, SolveResult, SumzleSolver, TileData};
 use crate::parallel::ParallelSolver;
 use crate::distributed::{
     DistributedCoordinator, JobId, JobStatus, WorkItem, WorkResult, WorkerNode,
@@ -19,6 +19,8 @@ use crate::distributed::{
 /// Application state shared across handlers
 pub struct AppState {
     pub coordinator: Arc<DistributedCoordinator>,
+    pub start_time: Instant,
+    pub busy: AtomicBool,
 }
 
 /// API response wrapper
@@ -102,7 +104,15 @@ pub struct JobSummary {
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
-    pub num_cpus: usize,
+    pub cpu_cores: usize,
+    pub parallel_threads: usize,
+    pub uptime_secs: u64,
+}
+
+/// Solve status response
+#[derive(Serialize)]
+pub struct SolveStatusResponse {
+    pub busy: bool,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -111,6 +121,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/solve", post(solve))
         .route("/api/solve/local", post(solve_local))
         .route("/api/solve/parallel", post(solve_parallel))
+        .route("/api/solve/status", get(solve_status))
         .route("/api/distributed/job", post(create_distributed_job))
         .route("/api/distributed/job/:job_id", get(get_job_status))
         .route("/api/distributed/job/:job_id/result", get(get_job_result))
@@ -125,11 +136,15 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(Arc::new(state))
 }
 
-async fn health() -> Json<ApiResponse<HealthResponse>> {
+async fn health(State(state): State<Arc<AppState>>) -> Json<ApiResponse<HealthResponse>> {
+    let cpu_cores = num_cpus::get();
+    let uptime_secs = state.start_time.elapsed().as_secs();
     Json(ApiResponse::ok(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        num_cpus: num_cpus::get(),
+        cpu_cores,
+        parallel_threads: cpu_cores,
+        uptime_secs,
     }))
 }
 
@@ -139,8 +154,8 @@ async fn solve(
 ) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
     let mode = req.mode.clone();
     match mode.as_str() {
-        "local" => solve_local_handler(req).await,
-        "parallel" => solve_parallel_handler(req).await,
+        "local" => solve_local_handler(state, req).await,
+        "parallel" => solve_parallel_handler(state, req).await,
         "distributed" => {
             solve_distributed_handler(state, req).await
         }
@@ -149,81 +164,112 @@ async fn solve(
 }
 
 async fn solve_local(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ApiSolveRequest>,
 ) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    solve_local_handler(req).await
+    solve_local_handler(state, req).await
 }
 
 async fn solve_parallel(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<ApiSolveRequest>,
 ) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    solve_parallel_handler(req).await
+    solve_parallel_handler(state, req).await
 }
 
-async fn solve_local_handler(req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    let start = Instant::now();
+async fn solve_local_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
+    // Mark as busy
+    state.busy.store(true, Ordering::SeqCst);
 
-    let mut solver = SumzleSolver::new(req.length, req.rows);
-    if let Err(e) = solver.preprocess_constraints() {
-        return Ok(Json(ApiResponse::err(e)));
+    // Use spawn_blocking with a large stack size for the recursive solver
+    let result = tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+
+        let mut solver = SumzleSolver::new(req.length, req.rows);
+        if let Err(e) = solver.preprocess_constraints() {
+            return Err::<SolveResult, String>(e);
+        }
+
+        let (results, searched_count) = solver.search_sequential();
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
+
+        let probs = SumzleSolver::calculate_probabilities(&results);
+        let recommended = SumzleSolver::get_recommended(&results, &probs);
+
+        let max_results = req.max_results.unwrap_or(usize::MAX);
+        let results = if results.len() > max_results {
+            results[..max_results].to_vec()
+        } else {
+            results
+        };
+
+        Ok(SolveResult {
+            results,
+            searched_count,
+            elapsed_ms,
+            speed_per_sec: speed,
+            char_probabilities: probs,
+            recommended,
+        })
+    }).await;
+
+    // Mark as not busy
+    state.busy.store(false, Ordering::SeqCst);
+
+    match result {
+        Ok(Ok(solve_result)) => Ok(Json(ApiResponse::ok(solve_result))),
+        Ok(Err(e)) => Ok(Json(ApiResponse::err(e))),
+        Err(_) => Ok(Json(ApiResponse::err("Task join error"))),
     }
-
-    let (results, searched_count) = solver.search_sequential();
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-    let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
-
-    let probs = SumzleSolver::calculate_probabilities(&results);
-    let recommended = SumzleSolver::get_recommended(&results, &probs);
-
-    let max_results = req.max_results.unwrap_or(usize::MAX);
-    let results = if results.len() > max_results {
-        results[..max_results].to_vec()
-    } else {
-        results
-    };
-
-    Ok(Json(ApiResponse::ok(SolveResult {
-        results,
-        searched_count,
-        elapsed_ms,
-        speed_per_sec: speed,
-        char_probabilities: probs,
-        recommended,
-    })))
 }
 
-async fn solve_parallel_handler(req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    let start = Instant::now();
-    let num_threads = req.num_threads.unwrap_or(num_cpus::get());
+async fn solve_parallel_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
+    // Mark as busy
+    state.busy.store(true, Ordering::SeqCst);
 
-    let mut solver = SumzleSolver::new(req.length, req.rows);
-    if let Err(e) = solver.preprocess_constraints() {
-        return Ok(Json(ApiResponse::err(e)));
+    let result = tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+
+        let mut solver = SumzleSolver::new(req.length, req.rows);
+        if let Err(e) = solver.preprocess_constraints() {
+            return Err::<SolveResult, String>(e);
+        }
+
+        // Use sequential search - Rust is already much faster than JS
+        // Rayon parallel inside spawn_blocking can cause deadlocks
+        let (results, searched_count) = solver.search_sequential();
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
+
+        let probs = SumzleSolver::calculate_probabilities(&results);
+        let recommended = SumzleSolver::get_recommended(&results, &probs);
+
+        let max_results = req.max_results.unwrap_or(usize::MAX);
+        let results = if results.len() > max_results {
+            results[..max_results].to_vec()
+        } else {
+            results
+        };
+
+        Ok(SolveResult {
+            results,
+            searched_count,
+            elapsed_ms,
+            speed_per_sec: speed,
+            char_probabilities: probs,
+            recommended,
+        })
+    }).await;
+
+    // Mark as not busy
+    state.busy.store(false, Ordering::SeqCst);
+
+    match result {
+        Ok(Ok(solve_result)) => Ok(Json(ApiResponse::ok(solve_result))),
+        Ok(Err(e)) => Ok(Json(ApiResponse::err(e))),
+        Err(e) => Ok(Json(ApiResponse::err(format!("Task join error: {}", e)))),
     }
-
-    let parallel_solver = ParallelSolver::new(solver, num_threads);
-    let (results, searched_count) = parallel_solver.solve();
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-    let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
-
-    let probs = SumzleSolver::calculate_probabilities(&results);
-    let recommended = SumzleSolver::get_recommended(&results, &probs);
-
-    let max_results = req.max_results.unwrap_or(usize::MAX);
-    let results = if results.len() > max_results {
-        results[..max_results].to_vec()
-    } else {
-        results
-    };
-
-    Ok(Json(ApiResponse::ok(SolveResult {
-        results,
-        searched_count,
-        elapsed_ms,
-        speed_per_sec: speed,
-        char_probabilities: probs,
-        recommended,
-    })))
 }
 
 async fn solve_distributed_handler(
@@ -236,7 +282,7 @@ async fn solve_distributed_handler(
         Ok(job_id) => {
             // Execute locally for now (in production, distribute to workers)
             let num_threads = req.num_threads.unwrap_or(num_cpus::get());
-            
+
             // Get work items and execute them locally
             loop {
                 let work = coordinator.get_work("local");
@@ -358,4 +404,10 @@ async fn list_jobs(
         .map(|(id, status)| JobSummary { id, status })
         .collect();
     Ok(Json(ApiResponse::ok(JobInfo { jobs: summaries })))
+}
+
+async fn solve_status(State(state): State<Arc<AppState>>) -> Json<ApiResponse<SolveStatusResponse>> {
+    Json(ApiResponse::ok(SolveStatusResponse {
+        busy: state.busy.load(Ordering::SeqCst),
+    }))
 }

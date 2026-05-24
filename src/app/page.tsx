@@ -12,7 +12,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Sun, Moon, Zap, Play, Plus, Trash2, Upload, Server, Cpu,
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
-  ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network
+  ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
+  X, ArrowRight, Sparkles, Clock, Hash
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -70,8 +71,8 @@ const API_TO_DISPLAY: Record<string, string> = {
 const STATE_ORDER: TileState[] = ['empty', 'correct', 'present', 'absent']
 
 const STATE_COLORS: Record<TileState, string> = {
-  correct: 'bg-emerald-500 text-white border-emerald-600 dark:bg-emerald-600 dark:border-emerald-700',
-  present: 'bg-amber-400 text-amber-950 border-amber-500 dark:bg-amber-500 dark:text-amber-950 dark:border-amber-600',
+  correct: 'bg-emerald-500 text-white border-emerald-600 dark:bg-emerald-600 dark:border-emerald-700 shadow-sm shadow-emerald-500/30',
+  present: 'bg-amber-400 text-amber-950 border-amber-500 dark:bg-amber-500 dark:text-amber-950 dark:border-amber-600 shadow-sm shadow-amber-400/30',
   absent: 'bg-zinc-400 text-zinc-800 border-zinc-500 dark:bg-zinc-600 dark:text-zinc-200 dark:border-zinc-700',
   empty: 'bg-white text-zinc-800 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-600',
 }
@@ -87,6 +88,12 @@ const MAX_ROWS = 10
 const MIN_LENGTH = 3
 const MAX_LENGTH = 15
 const DEFAULT_LENGTH = 6
+
+// Valid characters for physical keyboard mapping
+const VALID_CHARS_SET = new Set([
+  '0','1','2','3','4','5','6','7','8','9',
+  '+','-','*','/','%','^','=','>','(',')','!','[',']','A','a',
+])
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,6 +111,16 @@ function formatSpeed(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M/s'
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K/s'
   return n.toFixed(0) + '/s'
+}
+
+function formatExpression(expr: string): string {
+  return expr.replace(/\*/g, '×').replace(/\//g, '÷')
+}
+
+function formatUptime(secs: number): string {
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -138,6 +155,7 @@ export default function Home() {
 
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
+  const boardRef = useRef<HTMLDivElement>(null)
 
   // ─── Dark mode effect ──────────────────────────────────────────────────────
 
@@ -149,7 +167,7 @@ export default function Home() {
 
   const fetchHealth = useCallback(async () => {
     try {
-      const res = await fetch('/api/health?XTransformPort=3031')
+      const res = await fetch('/api/health')
       if (res.ok) {
         const data = await res.json()
         setHealth(data.data || data)
@@ -161,7 +179,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchHealth()
-    const interval = setInterval(fetchHealth, 30000)
+    const interval = setInterval(fetchHealth, 15000)
     return () => clearInterval(interval)
   }, [fetchHealth])
 
@@ -210,6 +228,7 @@ export default function Home() {
       if (i !== rowIdx) return row
       return row.map((tile, j) => {
         if (j !== colIdx) return tile
+        if (!tile.char && tile.state === 'empty') return tile // Can't cycle empty char
         const currentIdx = STATE_ORDER.indexOf(tile.state)
         const nextIdx = (currentIdx + 1) % STATE_ORDER.length
         return { ...tile, state: STATE_ORDER[nextIdx] }
@@ -222,7 +241,9 @@ export default function Home() {
       if (i !== rowIdx) return row
       return row.map((tile, j) => {
         if (j !== colIdx) return tile
-        return { ...tile, char }
+        // When setting a char, if state is empty and char is non-empty, default to 'correct'
+        const newState = char && tile.state === 'empty' ? 'correct' : tile.state
+        return { ...tile, char, state: newState }
       })
     }))
   }, [])
@@ -270,6 +291,78 @@ export default function Home() {
     }
   }, [selectedCell, expressionLength, setChar])
 
+  // ─── Physical keyboard support ────────────────────────────────────────────
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept if user is typing in an input/textarea
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+
+      if (!selectedCell) return
+
+      // Backspace
+      if (e.key === 'Backspace') {
+        e.preventDefault()
+        handleKeyPress('⌫')
+        return
+      }
+
+      // Delete key
+      if (e.key === 'Delete') {
+        e.preventDefault()
+        const { row, col } = selectedCell
+        setChar(row, col, '')
+        return
+      }
+
+      // Arrow keys for navigation
+      if (e.key === 'ArrowLeft' && selectedCell.col > 0) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row, col: selectedCell.col - 1 })
+        return
+      }
+      if (e.key === 'ArrowRight' && selectedCell.col < expressionLength - 1) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row, col: selectedCell.col + 1 })
+        return
+      }
+      if (e.key === 'ArrowUp' && selectedCell.row > 0) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row - 1, col: selectedCell.col })
+        return
+      }
+      if (e.key === 'ArrowDown' && selectedCell.row < rows.length - 1) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row + 1, col: selectedCell.col })
+        return
+      }
+
+      // Escape to deselect
+      if (e.key === 'Escape') {
+        setSelectedCell(null)
+        return
+      }
+
+      // Character input
+      let char = e.key
+      // Map 'a' to 'A' for permutation
+      if (char === 'a') char = 'A'
+      // Map '*' to display as '×' (but API uses '*')
+      if (char === '*') char = '×'
+      // Map '/' to display as '÷' (but API uses '/')
+      if (char === '/') char = '÷'
+
+      if (VALID_CHARS_SET.has(e.key) || (char === '×') || (char === '÷') || (char === 'A')) {
+        e.preventDefault()
+        handleKeyPress(char)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedCell, expressionLength, rows.length, handleKeyPress, setChar])
+
   // ─── Solve ─────────────────────────────────────────────────────────────────
 
   const solve = useCallback(async () => {
@@ -286,14 +379,19 @@ export default function Home() {
           state: tile.state,
         })))
 
-      const body = {
-        length: expressionLength,
-        rows: apiRows,
-        mode: 'parallel',
-        num_threads: health?.parallel_threads || 4,
+      if (apiRows.length === 0) {
+        // No constraints - solve all equations of this length
+        // Still send an empty row to indicate we want to solve
       }
 
-      const res = await fetch('/api/solve/parallel?XTransformPort=3031', {
+      const body = {
+        length: expressionLength,
+        rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
+        mode: 'parallel',
+        num_threads: health?.parallel_threads || undefined,
+      }
+
+      const res = await fetch('/api/solve/parallel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -324,6 +422,7 @@ export default function Home() {
       const parsed = JSON.parse(importText)
       if (parsed.length && typeof parsed.length === 'number') {
         setExpressionLength(parsed.length)
+        updateRowLengths(parsed.length)
       }
       if (parsed.rows && Array.isArray(parsed.rows)) {
         const importedRows = parsed.rows.map((row: { char: string; state: TileState }[]) =>
@@ -336,10 +435,11 @@ export default function Home() {
       }
       setShowImport(false)
       setImportText('')
+      setSolveError(null)
     } catch {
       setSolveError('Invalid JSON format for import')
     }
-  }, [importText])
+  }, [importText, updateRowLengths])
 
   // ─── Export game state ─────────────────────────────────────────────────────
 
@@ -361,22 +461,52 @@ export default function Home() {
 
   // ─── Distributed workers ───────────────────────────────────────────────────
 
-  const addWorker = useCallback(() => {
+  const addWorker = useCallback(async () => {
     if (!workerAddress.trim()) return
-    const newWorker: WorkerNode = {
-      id: Math.random().toString(36).substring(2, 8),
-      address: workerAddress.trim(),
-      status: 'idle',
-      tasks_completed: 0,
-      last_heartbeat: new Date().toISOString(),
+    try {
+      const res = await fetch('/api/distributed/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: workerAddress.trim() }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        const newWorker: WorkerNode = {
+          id: data.data.worker_id,
+          address: workerAddress.trim(),
+          status: 'idle',
+          tasks_completed: 0,
+          last_heartbeat: new Date().toISOString(),
+        }
+        setWorkers(prev => [...prev, newWorker])
+        setWorkerAddress('')
+      }
+    } catch {
+      // Fallback: add locally
+      const newWorker: WorkerNode = {
+        id: Math.random().toString(36).substring(2, 8),
+        address: workerAddress.trim(),
+        status: 'idle',
+        tasks_completed: 0,
+        last_heartbeat: new Date().toISOString(),
+      }
+      setWorkers(prev => [...prev, newWorker])
+      setWorkerAddress('')
     }
-    setWorkers(prev => [...prev, newWorker])
-    setWorkerAddress('')
   }, [workerAddress])
 
   const removeWorker = useCallback((id: string) => {
     setWorkers(prev => prev.filter(w => w.id !== id))
   }, [])
+
+  // ─── Clear all ─────────────────────────────────────────────────────────────
+
+  const clearAll = useCallback(() => {
+    setRows([createEmptyRow(expressionLength)])
+    setSelectedCell(null)
+    setSolveResult(null)
+    setSolveError(null)
+  }, [expressionLength])
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -402,7 +532,7 @@ export default function Home() {
             {health && (
               <Badge variant="secondary" className="hidden sm:flex items-center gap-1.5 text-xs">
                 <Cpu className="w-3 h-3" />
-                {health.cpu_cores} cores / {health.parallel_threads} threads
+                {health.cpu_cores} cores · {health.parallel_threads} threads
               </Badge>
             )}
             <Button
@@ -466,10 +596,10 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS}>
-                    <Plus className="w-3.5 h-3.5 mr-1" /> Add Guess Row
+                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving}>
+                    <Plus className="w-3.5 h-3.5 mr-1" /> Add Row
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)}>
+                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)} disabled={solving}>
                     <Upload className="w-3.5 h-3.5 mr-1" /> Import
                   </Button>
                   <Button variant="outline" size="sm" onClick={copyState}>
@@ -479,15 +609,23 @@ export default function Home() {
                   <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)}>
                     <Network className="w-3.5 h-3.5 mr-1" /> Workers
                   </Button>
+                  <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500">
+                    <RefreshCw className="w-3.5 h-3.5 mr-1" /> Clear
+                  </Button>
                 </div>
               </CardContent>
             </Card>
 
             {/* Import Panel */}
             {showImport && (
-              <Card>
+              <Card className="animate-in slide-in-from-top-2 duration-200">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Import Game State</CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">Import Game State</CardTitle>
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowImport(false)}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
                   <CardDescription>Paste JSON game state below</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -506,12 +644,17 @@ export default function Home() {
 
             {/* Distributed Computing Panel */}
             {showDistributed && (
-              <Card>
+              <Card className="animate-in slide-in-from-top-2 duration-200">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Server className="w-4 h-4 text-teal-500" />
-                    Distributed Workers
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Server className="w-4 h-4 text-teal-500" />
+                      Distributed Workers
+                    </CardTitle>
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowDistributed(false)}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
                   <CardDescription>Register and manage compute nodes</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -563,7 +706,7 @@ export default function Home() {
                   Constraint Board
                 </CardTitle>
                 <CardDescription>
-                  Click tile to select & type, click again to cycle state. Right-click also cycles state.
+                  Click tile → select, click again → cycle state. Type with keyboard. Use ← → ↑ ↓ to navigate.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -580,7 +723,7 @@ export default function Home() {
                 </div>
 
                 {/* Rows */}
-                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1" ref={boardRef}>
                   {rows.map((row, rowIdx) => (
                     <div key={rowIdx} className="flex items-center gap-1.5">
                       <span className="text-xs text-zinc-400 w-4 text-right shrink-0">{rowIdx + 1}</span>
@@ -594,14 +737,14 @@ export default function Home() {
                                 w-10 h-10 sm:w-11 sm:h-11 rounded-lg border-2 font-mono font-bold text-lg
                                 flex items-center justify-center transition-all duration-150 select-none
                                 ${STATE_COLORS[tile.state]}
-                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 scale-105' : ''}
+                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 scale-105 shadow-md' : ''}
                                 hover:scale-105 active:scale-95
                               `}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
                               onContextMenu={(e) => handleTileContextMenu(e, rowIdx, colIdx)}
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
-                              {tile.char || ''}
+                              {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
                             </button>
                           )
                         })}
@@ -645,7 +788,10 @@ export default function Home() {
                           key={key}
                           variant="outline"
                           size="sm"
-                          className="h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0"
+                          className={`h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all
+                            ${key === '⌫' ? 'bg-zinc-100 dark:bg-zinc-800' : ''}
+                            ${selectedCell ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700' : ''}
+                          `}
                           onClick={() => handleKeyPress(key)}
                           disabled={!selectedCell}
                         >
@@ -655,12 +801,17 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+                {selectedCell && (
+                  <p className="text-xs text-zinc-400 mt-2 text-center">
+                    Selected: Row {selectedCell.row + 1}, Col {selectedCell.col + 1} — Type or use keyboard
+                  </p>
+                )}
               </CardContent>
             </Card>
 
             {/* Solve Button */}
             <Button
-              className="w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20"
+              className="w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30"
               onClick={solve}
               disabled={solving}
               size="lg"
@@ -668,7 +819,7 @@ export default function Home() {
               {solving ? (
                 <>
                   <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
-                  Solving...
+                  Solving with Rust Engine...
                 </>
               ) : (
                 <>
@@ -680,9 +831,12 @@ export default function Home() {
 
             {/* Solve Error */}
             {solveError && (
-              <Card className="border-red-300 dark:border-red-800">
+              <Card className="border-red-300 dark:border-red-800 animate-in slide-in-from-top-2 duration-200">
                 <CardContent className="pt-5">
-                  <p className="text-sm text-red-600 dark:text-red-400">{solveError}</p>
+                  <div className="flex items-start gap-2">
+                    <X className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                    <p className="text-sm text-red-600 dark:text-red-400">{solveError}</p>
+                  </div>
                 </CardContent>
               </Card>
             )}
@@ -704,38 +858,53 @@ export default function Home() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     {health && (
                       <>
-                        <div className="text-center p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
+                        <div className="text-center p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 transition-colors">
                           <Cpu className="w-4 h-4 mx-auto mb-1 text-emerald-500" />
                           <div className="text-lg font-bold">{health.cpu_cores}</div>
-                          <div className="text-xs text-zinc-500">CPU Cores</div>
+                          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Cores</div>
                         </div>
-                        <div className="text-center p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
+                        <div className="text-center p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 transition-colors">
                           <Activity className="w-4 h-4 mx-auto mb-1 text-teal-500" />
                           <div className="text-lg font-bold">{health.parallel_threads}</div>
-                          <div className="text-xs text-zinc-500">Threads</div>
+                          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Threads</div>
                         </div>
                       </>
                     )}
                     {solveResult && (
                       <>
-                        <div className="text-center p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
+                        <div className="text-center p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 transition-colors">
                           <Timer className="w-4 h-4 mx-auto mb-1 text-amber-500" />
-                          <div className="text-lg font-bold">{solveResult.elapsed_ms.toFixed(1)}</div>
-                          <div className="text-xs text-zinc-500">ms Elapsed</div>
+                          <div className="text-lg font-bold">{solveResult.elapsed_ms < 1000 ? solveResult.elapsed_ms.toFixed(0) : (solveResult.elapsed_ms / 1000).toFixed(2)}</div>
+                          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">{solveResult.elapsed_ms < 1000 ? 'ms' : 'sec'}</div>
                         </div>
-                        <div className="text-center p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800">
+                        <div className="text-center p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 transition-colors">
                           <BarChart3 className="w-4 h-4 mx-auto mb-1 text-rose-500" />
                           <div className="text-lg font-bold">{formatNumber(solveResult.searched_count)}</div>
-                          <div className="text-xs text-zinc-500">Searched</div>
+                          <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Searched</div>
                         </div>
                       </>
                     )}
                   </div>
                   {solveResult && (
-                    <div className="mt-3 flex items-center justify-between p-2 rounded-lg bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30">
-                      <span className="text-sm font-medium">Solve Speed</span>
+                    <div className="mt-3 flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-100 dark:border-emerald-900/50">
+                      <span className="text-sm font-medium flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
+                        Solve Speed
+                      </span>
                       <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
                         {formatSpeed(solveResult.speed_per_sec)}
+                      </span>
+                    </div>
+                  )}
+                  {health && (
+                    <div className="mt-2 flex items-center justify-between p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 text-xs text-zinc-500">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        Engine v{health.version}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        Uptime {formatUptime(health.uptime_secs)}
                       </span>
                     </div>
                   )}
@@ -745,7 +914,7 @@ export default function Home() {
 
             {/* Solving Progress */}
             {solving && (
-              <Card>
+              <Card className="animate-in slide-in-from-top-2 duration-200">
                 <CardContent className="pt-5 space-y-3">
                   <div className="flex items-center gap-2">
                     <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
@@ -785,16 +954,26 @@ export default function Home() {
                           No solutions found. Try adjusting constraints.
                         </p>
                       ) : (
-                        <div className="max-h-80 overflow-y-auto space-y-1 mt-2">
-                          {solveResult.results.map((expr, idx) => (
+                        <div className="max-h-96 overflow-y-auto space-y-0.5 mt-2">
+                          {solveResult.results.slice(0, 500).map((expr, idx) => (
                             <div
                               key={idx}
-                              className="flex items-center gap-2 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                              className={`flex items-center gap-2 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors group
+                                ${expr === solveResult.recommended ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800' : ''}
+                              `}
                             >
-                              <span className="text-xs text-zinc-400 w-6 text-right">{idx + 1}</span>
-                              <code className="font-mono font-bold text-sm flex-1">{expr}</code>
+                              <span className="text-xs text-zinc-400 w-8 text-right font-mono">{idx + 1}</span>
+                              <code className="font-mono font-bold text-sm flex-1 tracking-wider">{formatExpression(expr)}</code>
+                              {expr === solveResult.recommended && (
+                                <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                              )}
                             </div>
                           ))}
+                          {solveResult.results.length > 500 && (
+                            <p className="text-xs text-zinc-400 text-center py-2">
+                              Showing 500 of {solveResult.results.length.toLocaleString()} solutions
+                            </p>
+                          )}
                         </div>
                       )}
                     </TabsContent>
@@ -805,41 +984,44 @@ export default function Home() {
                           No probability data available.
                         </p>
                       ) : (
-                        <div className="max-h-80 overflow-y-auto space-y-1.5 mt-2">
+                        <div className="max-h-96 overflow-y-auto space-y-1.5 mt-2">
                           {solveResult.char_probabilities
                             .sort((a, b) => b.probability - a.probability)
-                            .map((cp) => (
-                              <div key={cp.char} className="flex items-center gap-2">
-                                <code className="font-mono font-bold text-sm w-5 text-center">{cp.char}</code>
-                                <div className="flex-1 h-5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-500"
-                                    style={{ width: `${cp.probability}%` }}
-                                  />
+                            .map((cp) => {
+                              const displayChar = API_TO_DISPLAY[cp.char] || cp.char
+                              return (
+                                <div key={cp.char} className="flex items-center gap-2">
+                                  <code className="font-mono font-bold text-sm w-5 text-center">{displayChar}</code>
+                                  <div className="flex-1 h-5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                                    <div
+                                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-700 ease-out"
+                                      style={{ width: `${Math.min(cp.probability, 100)}%` }}
+                                    />
+                                  </div>
+                                  <span className="text-xs text-zinc-500 w-14 text-right font-mono">
+                                    {cp.probability.toFixed(1)}%
+                                  </span>
                                 </div>
-                                <span className="text-xs text-zinc-500 w-12 text-right">
-                                  {cp.probability.toFixed(1)}%
-                                </span>
-                              </div>
-                            ))}
+                              )
+                            })}
                         </div>
                       )}
                     </TabsContent>
 
                     <TabsContent value="recommended">
                       {solveResult.recommended ? (
-                        <div className="text-center py-6 space-y-4">
-                          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-lg shadow-amber-500/20">
-                            <Trophy className="w-8 h-8 text-white" />
+                        <div className="text-center py-8 space-y-4">
+                          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-lg shadow-amber-500/20 animate-in zoom-in-50 duration-300">
+                            <Trophy className="w-10 h-10 text-white" />
                           </div>
                           <div>
-                            <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-2">Recommended Guess</p>
-                            <code className="text-3xl font-mono font-black bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent">
-                              {solveResult.recommended}
+                            <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-3">Recommended Guess</p>
+                            <code className="text-4xl font-mono font-black bg-gradient-to-r from-amber-500 to-orange-500 bg-clip-text text-transparent tracking-widest">
+                              {formatExpression(solveResult.recommended)}
                             </code>
                           </div>
-                          <p className="text-xs text-zinc-400">
-                            Based on character probability analysis across all valid solutions
+                          <p className="text-xs text-zinc-400 max-w-xs mx-auto">
+                            Based on character probability analysis across {solveResult.results.length.toLocaleString()} valid solutions
                           </p>
                         </div>
                       ) : (
@@ -871,18 +1053,36 @@ export default function Home() {
             {/* How to Play */}
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">How to Play</CardTitle>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Hash className="w-4 h-4 text-emerald-500" />
+                  How to Play
+                </CardTitle>
               </CardHeader>
-              <CardContent className="text-sm text-zinc-600 dark:text-zinc-400 space-y-2">
-                <p>Sumzle is a math-based Wordle where you guess valid equations.</p>
+              <CardContent className="text-sm text-zinc-600 dark:text-zinc-400 space-y-3">
+                <p>Sumzle is a math-based Wordle where you guess valid equations like <code className="text-xs bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">1+2=3</code>.</p>
                 <Separator />
-                <div className="space-y-1">
-                  <p><span className="inline-block w-4 h-4 rounded bg-emerald-500 align-text-bottom mr-1" /> <strong>Green</strong> — Correct character in the right position</p>
-                  <p><span className="inline-block w-4 h-4 rounded bg-amber-400 align-text-bottom mr-1" /> <strong>Yellow</strong> — Character exists but in the wrong position</p>
-                  <p><span className="inline-block w-4 h-4 rounded bg-zinc-400 align-text-bottom mr-1" /> <strong>Gray</strong> — Character is not in the equation</p>
+                <div className="space-y-1.5">
+                  <p className="flex items-center gap-2">
+                    <span className="inline-block w-4 h-4 rounded bg-emerald-500 shrink-0" />
+                    <strong>Green</strong> — Correct character in the right position
+                  </p>
+                  <p className="flex items-center gap-2">
+                    <span className="inline-block w-4 h-4 rounded bg-amber-400 shrink-0" />
+                    <strong>Yellow</strong> — Character exists but in the wrong position
+                  </p>
+                  <p className="flex items-center gap-2">
+                    <span className="inline-block w-4 h-4 rounded bg-zinc-400 shrink-0" />
+                    <strong>Gray</strong> — Character is not in the equation
+                  </p>
                 </div>
                 <Separator />
-                <p>Click a tile to select it, then press a keyboard key to enter a character. Click the same tile again (or right-click) to cycle its color state.</p>
+                <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-500">
+                  <p>• Click a tile to select, then type a character</p>
+                  <p>• Click the same tile again (or right-click) to cycle its color</p>
+                  <p>• Use arrow keys to navigate between tiles</p>
+                  <p>• Supports: +−×÷%^=()![]A (permutation)</p>
+                  <p>• <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">[x/y]</code> = floor division, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">n!</code> = factorial, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">mAn</code> = permutation</p>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -898,9 +1098,9 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-4">
             {health && (
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Engine v{health.version} • Uptime {Math.floor(health.uptime_secs / 60)}m
+                Engine v{health.version} · {formatUptime(health.uptime_secs)}
               </span>
             )}
             <span>Parallel Multi-Core Solver</span>

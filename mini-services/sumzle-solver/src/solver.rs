@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
 
 /// Valid characters for Sumzle expressions
 pub const VALID_CHARS: &[char] = &[
@@ -1071,6 +1072,60 @@ impl SumzleSolver {
 
         current_expression[0] = None;
         (results, searched_count)
+    }
+
+    /// Parallel search using Rayon's global thread pool
+    /// Distributes top-level character branches across available threads
+    pub fn search_parallel(&self, _num_threads: usize) -> (Vec<String>, u64) {
+        let mut current_expression: Vec<Option<char>> = vec![None; self.length];
+        let current_counts: HashMap<char, usize> = HashMap::new();
+        let floor_context = FloorContext::default();
+
+        let top_level_chars = self.get_optimized_char_order(
+            0, &current_expression, None, floor_context,
+        );
+
+        // Collect the work items (top-level chars that can be placed)
+        let work_items: Vec<char> = top_level_chars.into_iter()
+            .filter(|&ch| self.can_place_char(ch, 0, &current_expression, None, &current_counts, floor_context))
+            .collect();
+
+        // Distribute across threads using Rayon's par_iter
+        let branch_results: Vec<(Vec<String>, u64)> = work_items.par_iter()
+            .map(|&ch| {
+                let mut expr = vec![None; self.length];
+                let mut counts = HashMap::new();
+                let mut results = Vec::new();
+                let mut searched_count: u64 = 0;
+
+                let next_floor_context = self.get_next_floor_context(ch, floor_context);
+                expr[0] = Some(ch);
+                *counts.entry(ch).or_insert(0) += 1;
+                let new_main_op = if Self::is_main_operator(ch) { Some(ch) } else { None };
+
+                self.recursive_search(
+                    1,
+                    &mut expr,
+                    new_main_op,
+                    &mut counts,
+                    next_floor_context,
+                    &mut results,
+                    &mut searched_count,
+                );
+
+                (results, searched_count)
+            })
+            .collect();
+
+        // Merge results
+        let mut all_results = Vec::new();
+        let mut total_searched: u64 = 0;
+        for (results, searched) in branch_results {
+            all_results.extend(results);
+            total_searched += searched;
+        }
+
+        (all_results, total_searched)
     }
 
     pub fn recursive_search(
