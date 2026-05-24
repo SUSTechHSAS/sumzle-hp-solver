@@ -5,7 +5,10 @@ const binaryPath = resolve(__dirname, 'target/release/sumzle-solver');
 
 const proc = spawn(binaryPath, [], {
   stdio: 'inherit',
-  env: { ...process.env },
+  env: {
+    ...process.env,
+    RUST_MIN_STACK: '4194304', // 4MB stack for recursive solver
+  },
 });
 
 proc.on('error', (err) => {

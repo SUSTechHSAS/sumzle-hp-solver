@@ -177,44 +177,61 @@ async fn solve_parallel(
     solve_parallel_handler(state, req).await
 }
 
-async fn solve_local_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    // Mark as busy
-    state.busy.store(true, Ordering::SeqCst);
+/// Execute the solver on a dedicated OS thread with custom stack size.
+/// RUST_MIN_STACK doesn't affect tokio::spawn_blocking threads, so we manually
+/// spawn a thread with a larger stack (4MB) for the recursive solver.
+async fn run_solver_async(req: ApiSolveRequest) -> Result<Result<SolveResult, String>, String> {
+    let handle = std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024) // 4MB stack (2x default, enough for depth <= 6)
+        .spawn(move || {
+            let start = Instant::now();
 
-    // Use spawn_blocking with a large stack size for the recursive solver
-    let result = tokio::task::spawn_blocking(move || {
-        let start = Instant::now();
+            let mut solver = SumzleSolver::new(req.length, req.rows);
+            if let Err(e) = solver.preprocess_constraints() {
+                return Err(e);
+            }
 
-        let mut solver = SumzleSolver::new(req.length, req.rows);
-        if let Err(e) = solver.preprocess_constraints() {
-            return Err::<SolveResult, String>(e);
-        }
+            let (results, searched_count) = solver.search_sequential();
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
 
-        let (results, searched_count) = solver.search_sequential();
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
+            let probs = SumzleSolver::calculate_probabilities(&results);
+            let recommended = SumzleSolver::get_recommended(&results, &probs);
 
-        let probs = SumzleSolver::calculate_probabilities(&results);
-        let recommended = SumzleSolver::get_recommended(&results, &probs);
+            let max_results = req.max_results.unwrap_or(usize::MAX);
+            let results = if results.len() > max_results {
+                results[..max_results].to_vec()
+            } else {
+                results
+            };
 
-        let max_results = req.max_results.unwrap_or(usize::MAX);
-        let results = if results.len() > max_results {
-            results[..max_results].to_vec()
-        } else {
-            results
-        };
-
-        Ok(SolveResult {
-            results,
-            searched_count,
-            elapsed_ms,
-            speed_per_sec: speed,
-            char_probabilities: probs,
-            recommended,
+            Ok(SolveResult {
+                results,
+                searched_count,
+                elapsed_ms,
+                speed_per_sec: speed,
+                char_probabilities: probs,
+                recommended,
+            })
         })
-    }).await;
+        .map_err(|e| format!("Failed to spawn solver thread: {}", e))?;
 
-    // Mark as not busy
+    // Join the thread asynchronously
+    let result = tokio::task::spawn_blocking(move || handle.join()).await;
+
+    match result {
+        Ok(Ok(inner)) => Ok(inner),
+        Ok(Err(_)) => Err("Solver thread panicked".to_string()),
+        Err(e) => Err(format!("Task join error: {}", e)),
+    }
+}
+
+async fn solve_local_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
+    // Reject if already busy to prevent concurrent solver threads
+    if state.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Ok(Json(ApiResponse::err("Solver is busy, please wait")));
+    }
+    let result = run_solver_async(req).await;
     state.busy.store(false, Ordering::SeqCst);
 
     match result {
@@ -225,44 +242,11 @@ async fn solve_local_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Resu
 }
 
 async fn solve_parallel_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
-    // Mark as busy
-    state.busy.store(true, Ordering::SeqCst);
-
-    let result = tokio::task::spawn_blocking(move || {
-        let start = Instant::now();
-
-        let mut solver = SumzleSolver::new(req.length, req.rows);
-        if let Err(e) = solver.preprocess_constraints() {
-            return Err::<SolveResult, String>(e);
-        }
-
-        // Use sequential search - Rust is already much faster than JS
-        // Rayon parallel inside spawn_blocking can cause deadlocks
-        let (results, searched_count) = solver.search_sequential();
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        let speed = if elapsed_ms > 0 { searched_count as f64 / (elapsed_ms as f64 / 1000.0) } else { 0.0 };
-
-        let probs = SumzleSolver::calculate_probabilities(&results);
-        let recommended = SumzleSolver::get_recommended(&results, &probs);
-
-        let max_results = req.max_results.unwrap_or(usize::MAX);
-        let results = if results.len() > max_results {
-            results[..max_results].to_vec()
-        } else {
-            results
-        };
-
-        Ok(SolveResult {
-            results,
-            searched_count,
-            elapsed_ms,
-            speed_per_sec: speed,
-            char_probabilities: probs,
-            recommended,
-        })
-    }).await;
-
-    // Mark as not busy
+    // Reject if already busy to prevent concurrent solver threads
+    if state.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Ok(Json(ApiResponse::err("Solver is busy, please wait")));
+    }
+    let result = run_solver_async(req).await;
     state.busy.store(false, Ordering::SeqCst);
 
     match result {

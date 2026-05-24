@@ -162,3 +162,52 @@
 - No WebSocket/real-time progress updates for long-running solves
 - Distributed computing not fully tested
 - Expression evaluation edge cases may differ from JS `eval()`
+
+---
+
+## Task ID: enhance-frontend-20260524
+**Agent**: Full-Stack Developer
+**Task**: Fix and enhance Sumzle solver frontend
+
+### Work Log:
+1. **Added max_results: 5000 to solve request**: Updated the `solve` function to include `max_results: MAX_RESULTS_DEFAULT` (5000) in the request body. This prevents OOM kills when the solver returns 40K+ results in a single JSON response. The Rust API already supports this parameter.
+2. **Added result filtering and search**: Added a search/filter input in the Solutions tab that filters solutions in real-time (client-side). Uses `useMemo` for efficient filtering. Shows filtered count vs total count. Supports filtering by both raw expression format (with `*` and `/`) and display format (with `×` and `÷`). Includes clear button.
+3. **Enhanced character frequency visualization**: Improved the Probabilities tab with:
+   - Color-coded character badges (emerald for high probability, teal for medium, zinc for low)
+   - Gradient bar colors that vary by probability level (emerald for ≥30%, teal for ≥15%, cyan for ≥5%, zinc for <5%)
+   - Inline percentage labels on bars when wide enough (≥8%)
+   - Rank numbers for each character
+4. **Improved "Ready to Solve" placeholder**: Replaced simple placeholder with a comprehensive quick-start guide including:
+   - Step-by-step tutorial (4 steps: set length, enter chars, set colors, solve)
+   - Visual example game state with colored tiles
+   - Pro tips section with keyboard shortcuts and best practices
+   - Better visual hierarchy with icons and separators
+5. **Added solve history**: Implemented state-based solve history (last 10 solves) with:
+   - History panel accessible via "History" button with badge count
+   - Each entry shows: expression length, constraint rows, result count, elapsed time, recommended solution
+   - "Limited" badge when max_results was applied
+   - Timestamp for each solve
+   - Clear all history option
+6. **Added total result count indicator**: When `max_results` limits the output:
+   - Badge shows "5,000+ found" instead of just the count
+   - Info message: "Showing 5,000 of ~X+ results. Add more constraints to narrow results."
+   - History entries track whether max_results was applied
+7. **Styling improvements**:
+   - Tile pop animation: Characters scale up briefly (scale-110) when entered via `poppingTile` state
+   - Keyboard feedback: Keys show `active:scale-90` press effect, dimmed when no tile selected, prompt message when no selection
+   - Gradient border on solve button: Glowing gradient border effect using absolute positioned div with blur
+   - Better result list styling: Hover effects (bg change, text color shift to emerald), border on recommended item
+   - Subtle tile separators: Vertical lines between tiles in the constraint board
+8. **Fixed solve flow**: Verified the click tile → select → click keyboard → char appears flow works correctly. Added helpful prompt "Click a tile on the board to start typing" when no tile is selected.
+
+### Stage Summary:
+- All 8 requested features implemented in `src/app/page.tsx`
+- `max_results: 5000` prevents OOM from large JSON responses
+- Real-time client-side filtering for thousands of results
+- Enhanced probability visualization with color coding and bar charts
+- Comprehensive quick-start guide replaces simple placeholder
+- Solve history tracking (state-based, last 10 entries)
+- Result count indicators when max_results is applied
+- Multiple styling improvements (animations, gradient borders, hover effects)
+- Lint passes clean
+- Rust solver backend not modified (as requested)

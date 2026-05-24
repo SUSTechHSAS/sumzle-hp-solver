@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,7 +13,8 @@ import {
   Sun, Moon, Zap, Play, Plus, Trash2, Upload, Server, Cpu,
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
-  X, ArrowRight, Sparkles, Clock, Hash
+  X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
+  BookOpen, Lightbulb, Target
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -48,6 +49,18 @@ interface WorkerNode {
   status: 'idle' | 'busy' | 'offline'
   tasks_completed: number
   last_heartbeat: string
+}
+
+interface SolveHistoryEntry {
+  id: string
+  timestamp: number
+  expressionLength: number
+  constraintCount: number
+  resultCount: number
+  elapsedMs: number
+  searchedCount: number
+  recommended: string
+  maxResultsApplied: boolean
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -88,6 +101,8 @@ const MAX_ROWS = 10
 const MIN_LENGTH = 3
 const MAX_LENGTH = 15
 const DEFAULT_LENGTH = 6
+const MAX_RESULTS_DEFAULT = 500
+const MAX_SOLVE_HISTORY = 10
 
 // Valid characters for physical keyboard mapping
 const VALID_CHARS_SET = new Set([
@@ -153,6 +168,16 @@ export default function Home() {
   // Results tab
   const [resultTab, setResultTab] = useState('solutions')
 
+  // Result filter/search
+  const [resultFilter, setResultFilter] = useState('')
+
+  // Solve history
+  const [solveHistory, setSolveHistory] = useState<SolveHistoryEntry[]>([])
+  const [showHistory, setShowHistory] = useState(false)
+
+  // Tile pop animation tracking
+  const [poppingTile, setPoppingTile] = useState<string | null>(null)
+
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
   const boardRef = useRef<HTMLDivElement>(null)
@@ -165,7 +190,12 @@ export default function Home() {
 
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
+  const solvingRef = useRef(false)
+  solvingRef.current = solving
+
   const fetchHealth = useCallback(async () => {
+    // Skip health check while solving to prevent concurrent requests
+    if (solvingRef.current) return
     try {
       const res = await fetch('/api/health')
       if (res.ok) {
@@ -179,7 +209,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchHealth()
-    const interval = setInterval(fetchHealth, 15000)
+    const interval = setInterval(fetchHealth, 30000)
     return () => clearInterval(interval)
   }, [fetchHealth])
 
@@ -246,6 +276,10 @@ export default function Home() {
         return { ...tile, char, state: newState }
       })
     }))
+    // Trigger pop animation
+    const tileKey = `${rowIdx}-${colIdx}`
+    setPoppingTile(tileKey)
+    setTimeout(() => setPoppingTile(null), 200)
   }, [])
 
   const handleTileClick = useCallback((rowIdx: number, colIdx: number, e?: React.MouseEvent) => {
@@ -369,6 +403,7 @@ export default function Home() {
     setSolving(true)
     setSolveError(null)
     setSolveResult(null)
+    setResultFilter('')
 
     try {
       // Convert display chars to API chars and filter empty rows
@@ -389,6 +424,7 @@ export default function Home() {
         rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
         mode: 'parallel',
         num_threads: health?.parallel_threads || undefined,
+        max_results: MAX_RESULTS_DEFAULT,
       }
 
       const res = await fetch('/api/solve/parallel', {
@@ -403,7 +439,24 @@ export default function Home() {
         throw new Error(data.error || `Solver returned status ${res.status}`)
       }
 
-      setSolveResult(data.data)
+      const result: SolveResult = data.data
+      setSolveResult(result)
+
+      // Add to solve history
+      const maxResultsApplied = result.results.length >= MAX_RESULTS_DEFAULT
+      const historyEntry: SolveHistoryEntry = {
+        id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
+        timestamp: Date.now(),
+        expressionLength,
+        constraintCount: apiRows.filter(r => r.some(t => t.char !== '')).length,
+        resultCount: result.results.length,
+        elapsedMs: result.elapsed_ms,
+        searchedCount: result.searched_count,
+        recommended: result.recommended || '',
+        maxResultsApplied,
+      }
+      setSolveHistory(prev => [historyEntry, ...prev].slice(0, MAX_SOLVE_HISTORY))
+
       // Scroll to results
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -506,7 +559,20 @@ export default function Home() {
     setSelectedCell(null)
     setSolveResult(null)
     setSolveError(null)
+    setResultFilter('')
   }, [expressionLength])
+
+  // ─── Filtered results ──────────────────────────────────────────────────────
+
+  const filteredResults = useMemo(() => {
+    if (!solveResult) return []
+    if (!resultFilter.trim()) return solveResult.results
+    const lowerFilter = resultFilter.toLowerCase().replace(/×/g, '*').replace(/÷/g, '/')
+    return solveResult.results.filter(expr =>
+      expr.toLowerCase().includes(lowerFilter) ||
+      formatExpression(expr).toLowerCase().includes(resultFilter.toLowerCase())
+    )
+  }, [solveResult, resultFilter])
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -609,6 +675,14 @@ export default function Home() {
                   <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)}>
                     <Network className="w-3.5 h-3.5 mr-1" /> Workers
                   </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowHistory(!showHistory)} className="relative">
+                    <History className="w-3.5 h-3.5 mr-1" /> History
+                    {solveHistory.length > 0 && (
+                      <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] flex items-center justify-center font-bold">
+                        {solveHistory.length}
+                      </span>
+                    )}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500">
                     <RefreshCw className="w-3.5 h-3.5 mr-1" /> Clear
                   </Button>
@@ -638,6 +712,81 @@ export default function Home() {
                   <Button size="sm" onClick={handleImport} disabled={!importText.trim()}>
                     <Upload className="w-3.5 h-3.5 mr-1" /> Import
                   </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Solve History Panel */}
+            {showHistory && (
+              <Card className="animate-in slide-in-from-top-2 duration-200">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <History className="w-4 h-4 text-teal-500" />
+                      Solve History
+                    </CardTitle>
+                    <div className="flex items-center gap-1">
+                      {solveHistory.length > 0 && (
+                        <Button variant="ghost" size="sm" className="h-6 text-xs text-zinc-400" onClick={() => setSolveHistory([])}>
+                          Clear
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowHistory(false)}>
+                        <X className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  </div>
+                  <CardDescription>Recent solve results for comparison</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {solveHistory.length === 0 ? (
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-3">
+                      No solve history yet. Run a solve to see results here.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {solveHistory.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="p-2.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                Len {entry.expressionLength}
+                              </Badge>
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                {entry.constraintCount} rows
+                              </Badge>
+                              {entry.maxResultsApplied && (
+                                <Badge className="text-[10px] px-1.5 py-0 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-0">
+                                  Limited
+                                </Badge>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-zinc-400">
+                              {new Date(entry.timestamp).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3 text-xs">
+                              <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                {formatNumber(entry.resultCount)} results
+                              </span>
+                              <span className="text-zinc-500">
+                                {entry.elapsedMs < 1000 ? `${entry.elapsedMs.toFixed(0)}ms` : `${(entry.elapsedMs / 1000).toFixed(2)}s`}
+                              </span>
+                            </div>
+                            {entry.recommended && (
+                              <code className="text-xs font-mono font-bold text-amber-600 dark:text-amber-400">
+                                {formatExpression(entry.recommended)}
+                              </code>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -706,7 +855,7 @@ export default function Home() {
                   Constraint Board
                 </CardTitle>
                 <CardDescription>
-                  Click tile → select, click again → cycle state. Type with keyboard. Use ← → ↑ ↓ to navigate.
+                  Click tile to select, click again to cycle state. Type with keyboard. Use arrow keys to navigate.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -727,17 +876,21 @@ export default function Home() {
                   {rows.map((row, rowIdx) => (
                     <div key={rowIdx} className="flex items-center gap-1.5">
                       <span className="text-xs text-zinc-400 w-4 text-right shrink-0">{rowIdx + 1}</span>
-                      <div className="flex gap-1">
+                      <div className="flex gap-0.5">
                         {row.map((tile, colIdx) => {
                           const isSelected = selectedCell?.row === rowIdx && selectedCell?.col === colIdx
+                          const tileKey = `${rowIdx}-${colIdx}`
+                          const isPopping = poppingTile === tileKey
                           return (
                             <button
                               key={colIdx}
                               className={`
                                 w-10 h-10 sm:w-11 sm:h-11 rounded-lg border-2 font-mono font-bold text-lg
                                 flex items-center justify-center transition-all duration-150 select-none
+                                relative
                                 ${STATE_COLORS[tile.state]}
-                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 scale-105 shadow-md' : ''}
+                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md' : ''}
+                                ${isPopping ? 'scale-110' : ''}
                                 hover:scale-105 active:scale-95
                               `}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
@@ -745,6 +898,10 @@ export default function Home() {
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
+                              {/* Subtle separator line between tiles */}
+                              {colIdx < row.length - 1 && (
+                                <span className="absolute -right-[3px] top-1/2 -translate-y-1/2 w-[1px] h-5 bg-zinc-200 dark:bg-zinc-700 opacity-50" />
+                              )}
                             </button>
                           )
                         })}
@@ -788,9 +945,13 @@ export default function Home() {
                           key={key}
                           variant="outline"
                           size="sm"
-                          className={`h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all
-                            ${key === '⌫' ? 'bg-zinc-100 dark:bg-zinc-800' : ''}
-                            ${selectedCell ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700' : ''}
+                          className={`
+                            h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100
+                            ${key === '⌫' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
+                            ${selectedCell
+                              ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
+                              : 'opacity-50'
+                            }
                           `}
                           onClick={() => handleKeyPress(key)}
                           disabled={!selectedCell}
@@ -806,28 +967,36 @@ export default function Home() {
                     Selected: Row {selectedCell.row + 1}, Col {selectedCell.col + 1} — Type or use keyboard
                   </p>
                 )}
+                {!selectedCell && (
+                  <p className="text-xs text-amber-500 dark:text-amber-400 mt-2 text-center">
+                    Click a tile on the board to start typing
+                  </p>
+                )}
               </CardContent>
             </Card>
 
-            {/* Solve Button */}
-            <Button
-              className="w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30"
-              onClick={solve}
-              disabled={solving}
-              size="lg"
-            >
-              {solving ? (
-                <>
-                  <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
-                  Solving with Rust Engine...
-                </>
-              ) : (
-                <>
-                  <Play className="w-5 h-5 mr-2" />
-                  Solve with Rust Engine
-                </>
-              )}
-            </Button>
+            {/* Solve Button - with gradient border effect */}
+            <div className="relative group">
+              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300" />
+              <Button
+                className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl"
+                onClick={solve}
+                disabled={solving}
+                size="lg"
+              >
+                {solving ? (
+                  <>
+                    <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
+                    Solving with Rust Engine...
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-5 h-5 mr-2" />
+                    Solve with Rust Engine
+                  </>
+                )}
+              </Button>
+            </div>
 
             {/* Solve Error */}
             {solveError && (
@@ -932,13 +1101,22 @@ export default function Home() {
             {solveResult && (
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
+                  <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
-                    Results
+                    <CardTitle className="text-base">Results</CardTitle>
                     <Badge variant="secondary" className="ml-auto">
-                      {solveResult.results.length} found
+                      {solveResult.results.length >= MAX_RESULTS_DEFAULT
+                        ? `${MAX_RESULTS_DEFAULT.toLocaleString()}+ found`
+                        : `${solveResult.results.length.toLocaleString()} found`
+                      }
                     </Badge>
-                  </CardTitle>
+                  </div>
+                  {solveResult.results.length >= MAX_RESULTS_DEFAULT && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                      <Info className="w-3 h-3" />
+                      Showing {MAX_RESULTS_DEFAULT.toLocaleString()} of ~{solveResult.results.length.toLocaleString()}+ results. Add more constraints to narrow results.
+                    </p>
+                  )}
                 </CardHeader>
                 <CardContent>
                   <Tabs value={resultTab} onValueChange={setResultTab}>
@@ -954,26 +1132,66 @@ export default function Home() {
                           No solutions found. Try adjusting constraints.
                         </p>
                       ) : (
-                        <div className="max-h-96 overflow-y-auto space-y-0.5 mt-2">
-                          {solveResult.results.slice(0, 500).map((expr, idx) => (
-                            <div
-                              key={idx}
-                              className={`flex items-center gap-2 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors group
-                                ${expr === solveResult.recommended ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800' : ''}
-                              `}
-                            >
-                              <span className="text-xs text-zinc-400 w-8 text-right font-mono">{idx + 1}</span>
-                              <code className="font-mono font-bold text-sm flex-1 tracking-wider">{formatExpression(expr)}</code>
-                              {expr === solveResult.recommended && (
-                                <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                              )}
-                            </div>
-                          ))}
-                          {solveResult.results.length > 500 && (
-                            <p className="text-xs text-zinc-400 text-center py-2">
-                              Showing 500 of {solveResult.results.length.toLocaleString()} solutions
+                        <div className="space-y-2 mt-2">
+                          {/* Search/Filter */}
+                          <div className="relative">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
+                            <Input
+                              placeholder="Filter solutions... (e.g. 1+2=3)"
+                              value={resultFilter}
+                              onChange={(e) => setResultFilter(e.target.value)}
+                              className="h-8 text-sm pl-8 pr-8"
+                            />
+                            {resultFilter && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="absolute right-0.5 top-1/2 -translate-y-1/2 h-7 w-7"
+                                onClick={() => setResultFilter('')}
+                              >
+                                <X className="w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
+
+                          {/* Result count info */}
+                          {resultFilter && (
+                            <p className="text-xs text-zinc-500">
+                              {filteredResults.length.toLocaleString()} of {solveResult.results.length.toLocaleString()} solutions match filter
                             </p>
                           )}
+
+                          {/* Results list */}
+                          <div className="max-h-96 overflow-y-auto space-y-0.5 scrollbar-thin">
+                            {filteredResults.slice(0, 500).map((expr, idx) => (
+                              <div
+                                key={idx}
+                                className={`flex items-center gap-2 p-2 rounded-lg transition-colors group
+                                  hover:bg-zinc-100 dark:hover:bg-zinc-800
+                                  ${expr === solveResult.recommended
+                                    ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800'
+                                    : 'border border-transparent'
+                                  }
+                                `}
+                              >
+                                <span className="text-xs text-zinc-400 w-8 text-right font-mono group-hover:text-zinc-600 dark:group-hover:text-zinc-300">{idx + 1}</span>
+                                <code className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">{formatExpression(expr)}</code>
+                                {expr === solveResult.recommended && (
+                                  <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                )}
+                              </div>
+                            ))}
+                            {filteredResults.length > 500 && (
+                              <p className="text-xs text-zinc-400 text-center py-2">
+                                Showing 500 of {filteredResults.length.toLocaleString()} filtered solutions
+                              </p>
+                            )}
+                            {filteredResults.length === 0 && resultFilter && (
+                              <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-6">
+                                No solutions match &ldquo;{resultFilter}&rdquo;
+                              </p>
+                            )}
+                          </div>
                         </div>
                       )}
                     </TabsContent>
@@ -984,23 +1202,54 @@ export default function Home() {
                           No probability data available.
                         </p>
                       ) : (
-                        <div className="max-h-96 overflow-y-auto space-y-1.5 mt-2">
+                        <div className="max-h-96 overflow-y-auto space-y-2 mt-2 scrollbar-thin">
                           {solveResult.char_probabilities
                             .sort((a, b) => b.probability - a.probability)
-                            .map((cp) => {
+                            .map((cp, idx) => {
                               const displayChar = API_TO_DISPLAY[cp.char] || cp.char
+                              const barWidth = Math.min(cp.probability, 100)
+                              // Color coding based on probability
+                              const barColor = cp.probability >= 30
+                                ? 'from-emerald-400 to-teal-500'
+                                : cp.probability >= 15
+                                  ? 'from-teal-400 to-cyan-500'
+                                  : cp.probability >= 5
+                                    ? 'from-cyan-400 to-sky-500'
+                                    : 'from-zinc-300 to-zinc-400 dark:from-zinc-600 dark:to-zinc-500'
                               return (
-                                <div key={cp.char} className="flex items-center gap-2">
-                                  <code className="font-mono font-bold text-sm w-5 text-center">{displayChar}</code>
-                                  <div className="flex-1 h-5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
-                                    <div
-                                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-700 ease-out"
-                                      style={{ width: `${Math.min(cp.probability, 100)}%` }}
-                                    />
+                                <div key={cp.char} className="flex items-center gap-2 group">
+                                  <span className="text-xs text-zinc-400 w-4 text-right font-mono">{idx + 1}</span>
+                                  <div
+                                    className={`w-8 h-8 rounded-lg border-2 flex items-center justify-center font-mono font-bold text-sm shrink-0
+                                      ${cp.probability >= 15 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800' :
+                                        cp.probability >= 5 ? 'bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/30 dark:text-teal-400 dark:border-teal-800' :
+                                        'bg-zinc-50 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700'}
+                                    `}
+                                  >
+                                    {displayChar}
                                   </div>
-                                  <span className="text-xs text-zinc-500 w-14 text-right font-mono">
-                                    {cp.probability.toFixed(1)}%
-                                  </span>
+                                  <div className="flex-1 h-6 bg-zinc-100 dark:bg-zinc-800 rounded-md overflow-hidden relative">
+                                    <div
+                                      className={`h-full rounded-md bg-gradient-to-r ${barColor} transition-all duration-700 ease-out relative`}
+                                      style={{ width: `${barWidth}%` }}
+                                    >
+                                      {cp.probability >= 8 && (
+                                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-white/90">
+                                          {cp.probability.toFixed(1)}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {cp.probability < 8 && (
+                                    <span className="text-xs text-zinc-500 w-14 text-right font-mono shrink-0">
+                                      {cp.probability.toFixed(1)}%
+                                    </span>
+                                  )}
+                                  {cp.probability >= 8 && (
+                                    <span className="text-xs text-zinc-400 w-14 text-right font-mono shrink-0">
+                                      {cp.probability.toFixed(1)}%
+                                    </span>
+                                  )}
                                 </div>
                               )
                             })}
@@ -1035,17 +1284,113 @@ export default function Home() {
               </Card>
             )}
 
-            {/* Empty state */}
+            {/* Empty state - Enhanced "Ready to Solve" placeholder */}
             {!solveResult && !solving && (
               <Card>
-                <CardContent className="pt-6 text-center">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
-                    <Zap className="w-8 h-8 text-zinc-300 dark:text-zinc-600" />
+                <CardContent className="pt-6">
+                  {/* Hero section */}
+                  <div className="text-center mb-6">
+                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/30 dark:to-teal-900/30 flex items-center justify-center border border-emerald-200 dark:border-emerald-800">
+                      <Zap className="w-8 h-8 text-emerald-500" />
+                    </div>
+                    <h3 className="text-lg font-semibold mb-1">Ready to Solve</h3>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto">
+                      Enter your constraints on the board, then hit Solve to find all valid equations.
+                    </p>
                   </div>
-                  <h3 className="text-lg font-semibold mb-1">Ready to Solve</h3>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto">
-                    Enter your constraints on the board, then hit Solve to find all valid equations using the high-performance Rust engine.
-                  </p>
+
+                  <Separator className="mb-4" />
+
+                  {/* Quick-start tutorial */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                      <BookOpen className="w-4 h-4 text-emerald-500" />
+                      Quick-Start Guide
+                    </h4>
+
+                    {/* Step 1 */}
+                    <div className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">1</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Set expression length</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Choose how many characters your equation has (e.g. 6 for <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">1+2=3</code> which is length 5)</p>
+                      </div>
+                    </div>
+
+                    {/* Step 2 */}
+                    <div className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">2</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Enter known characters</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Click a tile to select it, then type a character or click the on-screen keyboard</p>
+                      </div>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">3</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Set tile colors (states)</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">Click a filled tile again to cycle: <span className="inline-block w-3 h-3 rounded bg-emerald-500 align-middle" /> Correct → <span className="inline-block w-3 h-3 rounded bg-amber-400 align-middle" /> Present → <span className="inline-block w-3 h-3 rounded bg-zinc-400 align-middle" /> Absent</p>
+                      </div>
+                    </div>
+
+                    {/* Step 4 */}
+                    <div className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">4</span>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Hit Solve!</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">The Rust engine will search millions of expressions per second to find all matching solutions</p>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    {/* Example game state */}
+                    <div>
+                      <h5 className="text-xs font-semibold flex items-center gap-1.5 mb-2">
+                        <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
+                        Example: Length 6 with first guess
+                      </h5>
+                      <div className="flex justify-center gap-0.5 mb-2">
+                        {/* Example tiles: 1+1=2! → but let's show a realistic example */}
+                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">1</div>
+                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">+</div>
+                        <div className="w-9 h-9 rounded-lg border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-base flex items-center justify-center">2</div>
+                        <div className="w-9 h-9 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-base flex items-center justify-center">=</div>
+                        <div className="w-9 h-9 rounded-lg border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-base flex items-center justify-center">3</div>
+                        <div className="w-9 h-9 rounded-lg border-2 bg-white text-zinc-800 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-600 font-mono font-bold text-base flex items-center justify-center"></div>
+                      </div>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">
+                        Green = right position, Yellow = wrong position, Gray = not in equation
+                      </p>
+                    </div>
+
+                    <Separator />
+
+                    {/* Tips */}
+                    <div>
+                      <h5 className="text-xs font-semibold flex items-center gap-1.5 mb-2">
+                        <Target className="w-3.5 h-3.5 text-emerald-500" />
+                        Pro Tips
+                      </h5>
+                      <ul className="text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
+                        <li>&#8226; Start with no constraints to see all possibilities, then narrow down</li>
+                        <li>&#8226; Use the <strong>Probabilities</strong> tab to pick the most informative guess</li>
+                        <li>&#8226; The <strong>Best</strong> recommendation maximizes information gain</li>
+                        <li>&#8226; Results are limited to {MAX_RESULTS_DEFAULT.toLocaleString()} to prevent crashes</li>
+                        <li>&#8226; Use <kbd className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[10px]">←→↑↓</kbd> to navigate, <kbd className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[10px]">Esc</kbd> to deselect</li>
+                      </ul>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             )}
@@ -1077,11 +1422,11 @@ export default function Home() {
                 </div>
                 <Separator />
                 <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-500">
-                  <p>• Click a tile to select, then type a character</p>
-                  <p>• Click the same tile again (or right-click) to cycle its color</p>
-                  <p>• Use arrow keys to navigate between tiles</p>
-                  <p>• Supports: +−×÷%^=()![]A (permutation)</p>
-                  <p>• <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">[x/y]</code> = floor division, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">n!</code> = factorial, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">mAn</code> = permutation</p>
+                  <p>&#8226; Click a tile to select, then type a character</p>
+                  <p>&#8226; Click the same tile again (or right-click) to cycle its color</p>
+                  <p>&#8226; Use arrow keys to navigate between tiles</p>
+                  <p>&#8226; Supports: +−×÷%^=()![]A (permutation)</p>
+                  <p>&#8226; <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">[x/y]</code> = floor division, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">n!</code> = factorial, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">mAn</code> = permutation</p>
                 </div>
               </CardContent>
             </Card>
