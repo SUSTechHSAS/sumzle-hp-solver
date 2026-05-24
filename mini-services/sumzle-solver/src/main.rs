@@ -12,23 +12,19 @@ use std::time::Instant;
 const PORT: u16 = 3031;
 
 fn main() {
-    // Set stack size BEFORE creating tokio runtime
-    // This affects spawn_blocking threads
-    std::env::set_var("RUST_MIN_STACK", "8388608"); // 8MB
-
     let num_threads = num_cpus::get();
     tracing_subscriber::fmt::init();
 
     tracing::info!("Sumzle High-Performance Solver starting...");
     tracing::info!("  Port: {}", PORT);
     tracing::info!("  CPU cores: {}", num_threads);
-    tracing::info!("  Parallel engine: Rayon");
+    tracing::info!("  Parallel engine: Sequential (high-perf Rust)");
     tracing::info!("  Distributed computing: Enabled (coordinator mode)");
 
-    // Build tokio runtime - RUST_MIN_STACK controls spawn_blocking thread stack size
+    // Minimal tokio runtime - reduce memory footprint
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .max_blocking_threads(4)
+        .worker_threads(1)
+        .max_blocking_threads(1)
         .enable_all()
         .build()
         .expect("Failed to create tokio runtime");

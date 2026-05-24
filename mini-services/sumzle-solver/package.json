@@ -2,6 +2,6 @@
   "name": "sumzle-solver",
   "version": "1.0.0",
   "scripts": {
-    "dev": "bun --hot wrapper.ts"
+    "dev": "bun --hot watchdog.ts"
   }
 }

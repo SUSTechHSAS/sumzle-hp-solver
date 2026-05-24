@@ -427,13 +427,43 @@ export default function Home() {
         max_results: MAX_RESULTS_DEFAULT,
       }
 
-      const res = await fetch('/api/solve/parallel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
+      // Try solving with up to 3 retries (solver may auto-restart between attempts)
+      let data: any = null
+      let res: Response | null = null
+      const MAX_RETRIES = 3
+      const RETRY_DELAY = 3000 // 3s wait for solver to restart
 
-      const data = await res.json()
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          res = await fetch('/api/solve/parallel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+          data = await res.json()
+
+          if (res.ok && data.success) break // Success!
+
+          if (data.error?.includes('not available') || data.error?.includes('busy')) {
+            // Solver might be restarting, wait and retry
+            if (attempt < MAX_RETRIES - 1) {
+              await new Promise(r => setTimeout(r, RETRY_DELAY))
+              continue
+            }
+          }
+          break // Other error, don't retry
+        } catch {
+          if (attempt < MAX_RETRIES - 1) {
+            await new Promise(r => setTimeout(r, RETRY_DELAY))
+            continue
+          }
+          throw new Error('Solver backend not available after retries')
+        }
+      }
+
+      if (!res || !data) {
+        throw new Error('Solver backend not available after retries')
+      }
 
       if (!res.ok || !data.success) {
         throw new Error(data.error || `Solver returned status ${res.status}`)
