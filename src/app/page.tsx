@@ -564,40 +564,62 @@ export default function Home() {
             throw new Error('Solver is starting up, please try again in a few seconds')
           }
 
+          // Handle busy state (409) - don't retry, show message immediately
+          if (res.status === 409) {
+            const errMsg = (data as Record<string, unknown>)?.error as string || ''
+            throw new Error(errMsg || 'Solver is busy. Click "Reset" if it seems stuck.')
+          }
+
           if (res.ok && (data as Record<string, unknown>).success) break
 
           const errorMsg = (data as Record<string, unknown>).error as string || ''
-          if (errorMsg.includes('not available') || errorMsg.includes('busy') || errorMsg.includes('starting') || errorMsg.includes('timed out') || errorMsg.includes('connection failed') || errorMsg.includes('restarting')) {
+          // Don't retry on "busy" - it means the solver is processing
+          if (errorMsg.includes('busy') || errorMsg.includes('solver_busy')) {
+            throw new Error('Solver is currently busy. Click "Reset" if it seems stuck.')
+          }
+          if (errorMsg.includes('not available') || errorMsg.includes('starting') || errorMsg.includes('connection failed') || errorMsg.includes('restarting')) {
             if (attempt < MAX_RETRIES - 1) {
               await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
               continue
             }
           }
+          if (errorMsg.includes('timed out') || errorMsg.includes('too large')) {
+            throw new Error('Solve timed out — the search space is too large. Try adding more constraints or use a shorter expression length.')
+          }
           break
         } catch (err) {
+          // If this is already a user-friendly error we threw, re-throw it
+          if (err instanceof Error && (
+            err.message.includes('busy') ||
+            err.message.includes('timed out') ||
+            err.message.includes('search space') ||
+            err.message.includes('stuck')
+          )) {
+            throw err
+          }
           if (attempt < MAX_RETRIES - 1) {
             await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
             continue
           }
           const msg = err instanceof Error ? err.message : 'Unknown error'
           if (msg.includes('fetch')) {
-            throw new Error('Could not reach solver. It may be starting up \u2014 please try again in a few seconds')
+            throw new Error('Could not reach solver. It may be starting up — please try again in a few seconds')
           }
           throw new Error(msg)
         }
       }
 
       if (!res || !data) {
-        throw new Error('Solver is not responding. It may be restarting \u2014 please try again shortly')
+        throw new Error('Solver is not responding. It may be restarting — please try again shortly')
       }
 
       if (!res.ok || !(data as Record<string, unknown>).success) {
         const errMsg = (data as Record<string, unknown>).error as string || `Solver returned status ${res.status}`
         if (errMsg.includes('busy')) {
-          throw new Error('Solver is currently processing another request. Please wait a moment and try again')
+          throw new Error('Solver is currently busy. Click "Reset" if it seems stuck.')
         }
         if (errMsg.includes('not available') || errMsg.includes('connection failed')) {
-          throw new Error('Solver connection lost. It may be restarting \u2014 please try again shortly')
+          throw new Error('Solver connection lost. It may be restarting — please try again shortly')
         }
         throw new Error(errMsg)
       }
@@ -629,6 +651,24 @@ export default function Home() {
       setSolving(false)
     }
   }, [rows, expressionLength, health])
+
+  // ─── Reset Solver ────────────────────────────────────────────────────────
+
+  const resetSolver = useCallback(async () => {
+    try {
+      setSolveError(null)
+      const res = await fetch('/api/solver/reset')
+      const data = await res.json()
+      if (data.success) {
+        // Refresh health after reset
+        setTimeout(() => fetchHealth(), 2000)
+      } else {
+        setSolveError('Failed to reset solver. Please try again.')
+      }
+    } catch {
+      setSolveError('Could not reach solver for reset. It may need manual restart.')
+    }
+  }, [fetchHealth])
 
   // ─── Import ────────────────────────────────────────────────────────────────
 
@@ -1197,10 +1237,19 @@ export default function Home() {
               {solverOnline === null
                 ? 'Starting...'
                 : solverOnline
-                  ? `${health?.cpu_cores || '?'} cores \u00b7 ${health?.parallel_threads || '?'} threads`
-                  : `Offline${solverLastChecked ? ` \u00b7 ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
+                  ? `${health?.cpu_cores || '?'} cores · ${health?.parallel_threads || '?'} threads`
+                  : `Offline${solverLastChecked ? ` · ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
               }
             </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={resetSolver}
+              className="h-7 px-2 text-xs text-zinc-500 hover:text-rose-500 focus-visible:ring-2 focus-visible:ring-rose-500"
+              title="Reset solver (kills stuck process and restarts)"
+            >
+              <RefreshCw className="w-3 h-3 mr-1" /> Reset
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -1786,11 +1835,21 @@ export default function Home() {
               const warnings: string[] = []
               const hasEqualsInAnyRow = rows.some(row => row.some(t => t.char === '='))
               const hasAnyConstraints = rows.some(row => row.some(t => t.char !== ''))
+              const constraintCount = rows.reduce((acc, row) => acc + row.filter(t => t.char !== '').length, 0)
               if (hasAnyConstraints && !hasEqualsInAnyRow) {
                 warnings.push('No "=" found in constraints. Results may be very large.')
               }
               if (!hasAnyConstraints && expressionLength < 5) {
                 warnings.push('Short expression with no constraints will return many results.')
+              }
+              // Complexity warnings for long expressions
+              if (expressionLength >= 8 && constraintCount < 3) {
+                warnings.push(`Length ${expressionLength} with few constraints may take a very long time (60+ seconds). Add more constraints to speed up the search.`)
+              } else if (expressionLength >= 7 && !hasAnyConstraints) {
+                warnings.push(`Length ${expressionLength} with no constraints will take a long time. Consider adding at least one row of constraints.`)
+              }
+              if (expressionLength >= 9) {
+                warnings.push('Expressions of length 9+ have an enormous search space. The solver may time out or run out of memory.')
               }
               return warnings.map((w, i) => (
                 <div key={i} className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
