@@ -743,3 +743,64 @@ Unresolved Issues / Risks:
 - Length 8+ with no constraints is impractically slow — needs iterative solver or pruning improvements
 - Length 9+ may cause OOM or stack overflow — needs further investigation
 - No WebSocket for real-time progress on long solves
+
+---
+Task ID: 13
+Agent: Main Coordinator
+Task: Fix 500 result limit - return ALL results and provide download
+
+Work Log:
+1. **Diagnosed the issue**: User reported "only 500 result were calc" - the `MAX_RESULTS_DEFAULT = 500` was limiting the solve API response to only 500 results, even though the solver calculated all of them.
+2. **Removed the 500 result cap**: Changed the solve request to send `max_results: MAX_RESULTS_SAFE_CAP` (100,000) instead of 500. This allows most practical use cases to get all results.
+3. **Added "Download All (Unlimited)" feature**: When results reach the 100K safety cap, a prominent amber warning appears with a "Download All (unlimited)" button that re-solves without any max_results limit and directly downloads all results.
+4. **Added CSV download format**: The download menu now offers JSON, CSV (with #, Expression, Type, Length columns), and Plain text formats.
+5. **Added "Load More" pagination**: Instead of showing all results at once (DOM performance), results are displayed 500 at a time with a "Load More" button and a "Download all N" button.
+6. **Added displayLimit state**: Controls how many results are rendered in the DOM, starting at 500 and incrementing by 500 each time "Load More" is clicked.
+7. **Added downloadingAll state**: Tracks the progress of unlimited download operations with real-time progress messages.
+8. **Updated results header**: Shows accurate total count (e.g., "40,954 found") instead of the misleading "500+ found".
+9. **Increased proxy timeout**: Changed `SOLVER_REQUEST_TIMEOUT` from 3 minutes to 5 minutes to accommodate larger result sets.
+10. **Verified via API**: Tested that length 6 with no constraints returns all 40,954 results (previously capped at 500).
+11. **Verified via agent-browser**: Confirmed "40,954 found" badge, download buttons, and load more functionality all work correctly.
+12. **Created cron job**: Set up 15-minute periodic QA schedule.
+
+Key Changes:
+- `src/app/page.tsx`: 
+  - `MAX_RESULTS_DEFAULT = 0` (unused), `MAX_RESULTS_SAFE_CAP = 100000`, `MAX_DISPLAY_RESULTS = 500`
+  - Added `displayLimit`, `downloadingAll`, `downloadAllProgress` state
+  - Added `handleDownloadAllUnlimited()` function for re-solving without limit
+  - Updated `handleDownload()` to support CSV format
+  - Updated results card header with download info and capped warning
+  - Added "Load More" pagination with "Download all N" button
+  - Updated download menu with CSV option and "Unlimited (re-solve)" section
+- `src/app/api/[[...path]]/route.ts`: Increased timeout to 5 minutes
+
+Stage Summary:
+- All results are now returned (up to 100K cap) instead of just 500
+- Download feature supports JSON, CSV, and Plain text with ALL results
+- "Download All (unlimited)" re-solves without cap for 100K+ result cases
+- DOM performance maintained with 500-result display window + load more
+- Lint passes clean
+- Solver running stable
+
+Current Project State:
+- **Phase**: Feature-Complete with Full Result Download
+- **Overall Status**: Stable and functional
+- All core features working: constraint board, keyboard, solve, results, import/export, history, presets
+- Results now return ALL solutions (up to 100K safety cap)
+- Download available in JSON, CSV, TXT formats
+- Unlimited download available for 100K+ result sets
+
+Unresolved Issues / Risks:
+- Length 8+ with no constraints generates 4M+ results — unlimited download will take very long and use lots of memory
+- Busy flag can still get stuck (RAII fix not compiled) — but Reset button provides workaround
+- No WebSocket for real-time progress on long solves
+- Rayon parallel mode still causes deadlock inside spawn_blocking
+- Distributed computing endpoints exist but not fully tested end-to-end
+
+Recommended Next Steps:
+1. Add streaming/chunked download for very large result sets (4M+)
+2. Implement WebSocket-based real-time solve progress
+3. Add iterative solver for long expressions (length > 8) to avoid stack overflow
+4. Fix Rayon parallel mode (use std::thread instead of spawn_blocking)
+5. Test distributed computing end-to-end with actual worker nodes
+6. Add behavioral consistency test suite (compare JS vs Rust solver results)

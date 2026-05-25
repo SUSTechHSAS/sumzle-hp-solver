@@ -4,7 +4,7 @@ import { execSync } from "child_process";
 const SOLVER_PORT = 3031;
 const SOLVER_STARTUP_TIMEOUT = 10000; // 10s to wait for solver to start
 const SOLVER_CHECK_INTERVAL = 500; // Check every 500ms
-const SOLVER_REQUEST_TIMEOUT = 180000; // 3 minutes max for solve requests
+const SOLVER_REQUEST_TIMEOUT = 300000; // 5 minutes max for solve requests (unlimited results can be large)
 
 // Track solver startup state
 let solverStarting = false;

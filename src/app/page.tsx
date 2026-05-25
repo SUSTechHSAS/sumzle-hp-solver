@@ -116,7 +116,9 @@ const MAX_ROWS = 10
 const MIN_LENGTH = 3
 const MAX_LENGTH = 15
 const DEFAULT_LENGTH = 6
-const MAX_RESULTS_DEFAULT = 500
+const MAX_RESULTS_DEFAULT = 0  // 0 = no limit, fetch ALL results from solver
+const MAX_DISPLAY_RESULTS = 500  // Max results to render in the DOM for performance
+const MAX_RESULTS_SAFE_CAP = 100000  // Safety cap to prevent browser OOM on initial solve
 const MAX_SOLVE_HISTORY = 10
 const MAX_UNDO_HISTORY = 50
 
@@ -240,6 +242,13 @@ export default function Home() {
 
   // Result badge flash
   const [resultBadgeFlash, setResultBadgeFlash] = useState(false)
+
+  // Load more results display limit
+  const [displayLimit, setDisplayLimit] = useState(MAX_DISPLAY_RESULTS)
+
+  // Download all (unlimited) progress
+  const [downloadingAll, setDownloadingAll] = useState(false)
+  const [downloadAllProgress, setDownloadAllProgress] = useState('')
 
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
@@ -523,6 +532,7 @@ export default function Home() {
     setSolveError(null)
     setSolveResult(null)
     setResultFilter('')
+    setDisplayLimit(MAX_DISPLAY_RESULTS)
 
     try {
       const apiRows = rows
@@ -532,12 +542,12 @@ export default function Home() {
           state: tile.state === 'absent' ? 'empty' : tile.state,
         })))
 
-      const body = {
+      const body: Record<string, unknown> = {
         length: expressionLength,
         rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
         mode: 'parallel',
         num_threads: health?.parallel_threads || undefined,
-        max_results: MAX_RESULTS_DEFAULT,
+        max_results: MAX_RESULTS_SAFE_CAP,
       }
 
       let data: Record<string, unknown> | null = null
@@ -627,7 +637,7 @@ export default function Home() {
       const result: SolveResult = (data as Record<string, unknown>).data as SolveResult
       setSolveResult(result)
 
-      const maxResultsApplied = result.results.length >= MAX_RESULTS_DEFAULT
+      const maxResultsApplied = result.results.length >= MAX_RESULTS_SAFE_CAP
       const historyEntry: SolveHistoryEntry = {
         id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
         timestamp: Date.now(),
@@ -1081,7 +1091,7 @@ export default function Home() {
 
   // ─── Download handlers ─────────────────────────────────────────────────────
 
-  const handleDownload = useCallback((format: 'json' | 'txt') => {
+  const handleDownload = useCallback((format: 'json' | 'txt' | 'csv') => {
     if (!solveResult) return
 
     let content: string
@@ -1092,6 +1102,14 @@ export default function Home() {
       content = JSON.stringify(solveResult, null, 2)
       filename = `sumzle-results-${Date.now()}.json`
       mimeType = 'application/json'
+    } else if (format === 'csv') {
+      const header = '#,Expression,Type,Length'
+      const rows = solveResult.results.map((expr, idx) =>
+        `${idx + 1},"${formatExpression(expr)}",${getExpressionType(expr)},${expr.length}`
+      )
+      content = [header, ...rows].join('\n')
+      filename = `sumzle-results-${Date.now()}.csv`
+      mimeType = 'text/csv'
     } else {
       content = solveResult.results.map(formatExpression).join('\n')
       filename = `sumzle-results-${Date.now()}.txt`
@@ -1109,6 +1127,100 @@ export default function Home() {
     URL.revokeObjectURL(url)
     setShowDownloadMenu(false)
   }, [solveResult])
+
+  // ─── Download All (Unlimited) ─────────────────────────────────────────────────
+
+  const handleDownloadAllUnlimited = useCallback(async (format: 'txt' | 'csv' | 'json') => {
+    if (!solveResult) return
+    setDownloadingAll(true)
+    setDownloadAllProgress('Re-solving without limit...')
+
+    try {
+      const apiRows = rows
+        .filter(row => row.some(t => t.char !== ''))
+        .map(row => row.map(tile => ({
+          char: DISPLAY_TO_API[tile.char] || tile.char,
+          state: tile.state === 'absent' ? 'empty' : tile.state,
+        })))
+
+      const body = {
+        length: expressionLength,
+        rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
+        mode: 'parallel',
+        num_threads: health?.parallel_threads || undefined,
+        // No max_results = unlimited
+      }
+
+      setDownloadAllProgress('Calculating all results (this may take a while)...')
+
+      const res = await fetch('/api/solve/parallel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      const text = await res.text()
+      let data: Record<string, unknown>
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error('Failed to parse solver response')
+      }
+
+      if (!res.ok || !data.success) {
+        throw new Error((data.error as string) || 'Solve failed')
+      }
+
+      const result: SolveResult = data.data as SolveResult
+      setDownloadAllProgress(`Processing ${result.results.length.toLocaleString()} results for download...`)
+
+      let content: string
+      let filename: string
+      let mimeType: string
+
+      if (format === 'json') {
+        content = JSON.stringify(result, null, 2)
+        filename = `sumzle-all-results-${Date.now()}.json`
+        mimeType = 'application/json'
+      } else if (format === 'csv') {
+        const header = '#,Expression,Type,Length'
+        const csvRows = result.results.map((expr, idx) =>
+          `${idx + 1},"${formatExpression(expr)}",${getExpressionType(expr)},${expr.length}`
+        )
+        content = [header, ...csvRows].join('\n')
+        filename = `sumzle-all-results-${Date.now()}.csv`
+        mimeType = 'text/csv'
+      } else {
+        content = result.results.map(formatExpression).join('\n')
+        filename = `sumzle-all-results-${Date.now()}.txt`
+        mimeType = 'text/plain'
+      }
+
+      const blob = new Blob([content], { type: mimeType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      setDownloadAllProgress(`Downloaded ${result.results.length.toLocaleString()} results!`)
+
+      // Update solveResult with full results if they're more than current
+      if (result.results.length > solveResult.results.length) {
+        setSolveResult(result)
+      }
+    } catch (err) {
+      setSolveError(`Download all failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setTimeout(() => {
+        setDownloadingAll(false)
+        setDownloadAllProgress('')
+      }, 2000)
+    }
+  }, [solveResult, rows, expressionLength, health])
 
   // ─── Recent solve speeds for bar chart ─────────────────────────────────────
 
@@ -2051,20 +2163,53 @@ export default function Home() {
                       variant="secondary"
                       className={`ml-auto relative ${celebrating ? 'animate-bounce' : ''} ${resultBadgeFlash ? 'badge-flash' : ''}`}
                     >
-                      {solveResult.results.length >= MAX_RESULTS_DEFAULT
-                        ? `${MAX_RESULTS_DEFAULT.toLocaleString()}+ found`
-                        : `${solveResult.results.length.toLocaleString()} found`
-                      }
+                      {`${solveResult.results.length.toLocaleString()} found`}
                       {celebrating && (
                         <span className="absolute -top-2 -right-2 text-sm">{'\u2728'}</span>
                       )}
                     </Badge>
                   </div>
-                  {solveResult.results.length >= MAX_RESULTS_DEFAULT && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
-                      <Info className="w-3 h-3" />
-                      Showing {MAX_RESULTS_DEFAULT.toLocaleString()} of ~{solveResult.results.length.toLocaleString()}+ results. Add more constraints to narrow results.
-                    </p>
+                  {solveResult.results.length > MAX_DISPLAY_RESULTS && (
+                    <div className="space-y-2 mt-1">
+                      <div className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <Download className="w-3 h-3" />
+                          {solveResult.results.length.toLocaleString()} solutions available for download
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-[10px] px-2 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => handleDownload('txt')}
+                        >
+                          <Download className="w-2.5 h-2.5 mr-1" /> Download current
+                        </Button>
+                      </div>
+                      {solveResult.results.length >= MAX_RESULTS_SAFE_CAP && (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          <div className="flex-1 text-xs text-amber-700 dark:text-amber-400">
+                            <span className="font-semibold">Results capped at {MAX_RESULTS_SAFE_CAP.toLocaleString()}</span> — more may exist. Use &ldquo;Download All&rdquo; to get every result (may take longer).
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px] px-2 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-950/30 shrink-0 focus-visible:ring-2 focus-visible:ring-amber-500"
+                            onClick={() => handleDownloadAllUnlimited('txt')}
+                            disabled={downloadingAll}
+                          >
+                            {downloadingAll ? <RefreshCw className="w-2.5 h-2.5 mr-1 animate-spin" /> : <Download className="w-2.5 h-2.5 mr-1" />}
+                            Download All (unlimited)
+                          </Button>
+                        </div>
+                      )}
+                      {downloadingAll && downloadAllProgress && (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                          <RefreshCw className="w-3.5 h-3.5 text-emerald-500 animate-spin shrink-0" />
+                          <span className="text-xs text-emerald-700 dark:text-emerald-400">{downloadAllProgress}</span>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </CardHeader>
                 <CardContent>
@@ -2148,24 +2293,48 @@ export default function Home() {
                                 size="sm"
                                 className="h-8 px-2 focus-visible:ring-2 focus-visible:ring-emerald-500"
                                 onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                                title="Download results"
+                                title={`Download ${solveResult.results.length.toLocaleString()} results`}
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </Button>
                               {showDownloadMenu && (
-                                <div className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-1 duration-150">
+                                <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-1 duration-150">
+                                  <div className="px-3 py-1.5 text-[10px] text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 font-medium">
+                                    Download {solveResult.results.length.toLocaleString()} results
+                                  </div>
                                   <button
-                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-t-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('json')}
                                   >
                                     {'\ud83d\udcc4'} JSON (full data)
                                   </button>
                                   <button
-                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('csv')}
+                                  >
+                                    {'\ud83d\udcca'} CSV (spreadsheet)
+                                  </button>
+                                  <button
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('txt')}
                                   >
                                     {'\ud83d\udcdd'} Plain text (list)
                                   </button>
+                                  {solveResult.results.length >= MAX_RESULTS_SAFE_CAP && (
+                                    <>
+                                      <div className="border-t border-zinc-100 dark:border-zinc-700 my-0.5" />
+                                      <div className="px-3 py-1 text-[9px] text-amber-500 font-medium uppercase tracking-wider">
+                                        Unlimited (re-solve)
+                                      </div>
+                                      <button
+                                        className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 dark:hover:bg-amber-950/20 text-amber-700 dark:text-amber-400 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-amber-500"
+                                        onClick={() => { handleDownloadAllUnlimited('txt'); setShowDownloadMenu(false) }}
+                                        disabled={downloadingAll}
+                                      >
+                                        {'\u26a1'} All results (TXT, unlimited)
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -2180,7 +2349,7 @@ export default function Home() {
 
                           {/* Results list with zebra striping */}
                           <div className="max-h-96 overflow-y-auto space-y-0 scrollbar-thin rounded-lg border border-zinc-100 dark:border-zinc-800">
-                            {filteredResults.slice(0, 500).map((expr, idx) => {
+                            {filteredResults.slice(0, displayLimit).map((expr, idx) => {
                               const isRecommended = expr === solveResult.recommended
                               const exprType = getExpressionType(expr)
                               return (
@@ -2222,10 +2391,30 @@ export default function Home() {
                                 </div>
                               )
                             })}
-                            {filteredResults.length > 500 && (
-                              <p className="text-xs text-zinc-400 text-center py-2">
-                                Showing 500 of {filteredResults.length.toLocaleString()} filtered solutions
-                              </p>
+                            {filteredResults.length > displayLimit && (
+                              <div className="text-center py-3 space-y-2">
+                                <p className="text-xs text-zinc-400">
+                                  Showing {displayLimit.toLocaleString()} of {filteredResults.length.toLocaleString()} solutions
+                                </p>
+                                <div className="flex items-center justify-center gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => setDisplayLimit(prev => Math.min(prev + MAX_DISPLAY_RESULTS, filteredResults.length))}
+                                  >
+                                    Load {Math.min(MAX_DISPLAY_RESULTS, filteredResults.length - displayLimit).toLocaleString()} more
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('txt')}
+                                  >
+                                    <Download className="w-3 h-3 mr-1" /> Download all {filteredResults.length.toLocaleString()}
+                                  </Button>
+                                </div>
+                              </div>
                             )}
                             {filteredResults.length === 0 && resultFilter && (
                               <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-6">
