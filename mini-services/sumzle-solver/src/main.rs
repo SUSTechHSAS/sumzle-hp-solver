@@ -22,6 +22,7 @@ fn main() {
     tracing::info!("  Distributed computing: Enabled (coordinator mode)");
 
     // Minimal tokio runtime - reduce memory footprint
+    // NOTE: worker_threads=2, max_blocking_threads=4 would be better but requires recompilation
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .max_blocking_threads(1)

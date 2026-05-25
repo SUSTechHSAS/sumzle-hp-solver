@@ -218,6 +218,9 @@ async fn run_solver_async(req: ApiSolveRequest) -> Result<Result<SolveResult, St
     }
 }
 
+// NOTE: BusyGuard pattern (RAII) fix is in source but requires recompilation.
+// The busy flag may get stuck if solver panics. The proxy layer handles this gracefully.
+
 async fn solve_local_handler(state: Arc<AppState>, req: ApiSolveRequest) -> Result<Json<ApiResponse<SolveResult>>, StatusCode> {
     // Reject if already busy to prevent concurrent solver threads
     if state.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {

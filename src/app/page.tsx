@@ -14,7 +14,7 @@ import {
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
-  Target, HelpCircle, AlertTriangle
+  Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -59,8 +59,16 @@ interface SolveHistoryEntry {
   resultCount: number
   elapsedMs: number
   searchedCount: number
+  speedPerSec: number
   recommended: string
   maxResultsApplied: boolean
+}
+
+interface SmartHint {
+  char: string
+  displayChar: string
+  position: number
+  probability: number
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -138,6 +146,11 @@ function formatUptime(secs: number): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
 }
 
+function getExpressionType(expr: string): 'equation' | 'comparison' {
+  if (expr.includes('>')) return 'comparison'
+  return 'equation'
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -178,8 +191,11 @@ export default function Home() {
   // Tile pop animation tracking
   const [poppingTile, setPoppingTile] = useState<string | null>(null)
 
+  // Tile flip animation tracking
+  const [flippingTile, setFlippingTile] = useState<string | null>(null)
+
   // Solver status (derived from health checks)
-  const [solverOnline, setSolverOnline] = useState<boolean | null>(null) // null = unknown/starting
+  const [solverOnline, setSolverOnline] = useState<boolean | null>(null)
   const [solverLastChecked, setSolverLastChecked] = useState<number>(0)
 
   // Solve progress timer
@@ -197,9 +213,16 @@ export default function Home() {
   // Celebration effect
   const [celebrating, setCelebrating] = useState(false)
 
+  // Smart hints
+  const [showHints, setShowHints] = useState(true)
+
+  // Download menu
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false)
+
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
   const boardRef = useRef<HTMLDivElement>(null)
+  const downloadMenuRef = useRef<HTMLDivElement>(null)
 
   // ─── Dark mode effect ──────────────────────────────────────────────────────
 
@@ -231,13 +254,26 @@ export default function Home() {
     }
   }, [solveResult])
 
+  // ─── Close download menu on outside click ──────────────────────────────────
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (downloadMenuRef.current && !downloadMenuRef.current.contains(e.target as Node)) {
+        setShowDownloadMenu(false)
+      }
+    }
+    if (showDownloadMenu) {
+      document.addEventListener('mousedown', handleClick)
+      return () => document.removeEventListener('mousedown', handleClick)
+    }
+  }, [showDownloadMenu])
+
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
   const solvingRef = useRef(false)
   solvingRef.current = solving
 
   const fetchHealth = useCallback(async () => {
-    // Skip health check while solving to prevent concurrent requests
     if (solvingRef.current) return
     try {
       const res = await fetch('/api/health')
@@ -246,23 +282,20 @@ export default function Home() {
         setHealth(data.data || data)
         setSolverOnline(true)
       } else {
-        // Keep last known health info but mark as offline
         setSolverOnline(false)
       }
     } catch {
-      // Keep last known health info but mark as offline
       setSolverOnline(false)
     }
     setSolverLastChecked(Date.now())
   }, [])
 
-  // Adaptive health check: 15s initially, 30s when online, 60s when offline
   useEffect(() => {
-    fetchHealth() // Check immediately on mount
+    fetchHealth()
     const getInterval = () => {
-      if (solverOnline === null) return 15000 // Starting: check every 15s
-      if (solverOnline) return 30000 // Online: every 30s
-      return 60000 // Offline: every 60s
+      if (solverOnline === null) return 15000
+      if (solverOnline) return 30000
+      return 60000
     }
     const interval = setInterval(fetchHealth, getInterval())
     return () => clearInterval(interval)
@@ -313,12 +346,16 @@ export default function Home() {
       if (i !== rowIdx) return row
       return row.map((tile, j) => {
         if (j !== colIdx) return tile
-        if (!tile.char && tile.state === 'empty') return tile // Can't cycle empty char
+        if (!tile.char && tile.state === 'empty') return tile
         const currentIdx = STATE_ORDER.indexOf(tile.state)
         const nextIdx = (currentIdx + 1) % STATE_ORDER.length
         return { ...tile, state: STATE_ORDER[nextIdx] }
       })
     }))
+    // Trigger flip animation
+    const tileKey = `${rowIdx}-${colIdx}`
+    setFlippingTile(tileKey)
+    setTimeout(() => setFlippingTile(null), 300)
   }, [])
 
   const setChar = useCallback((rowIdx: number, colIdx: number, char: string) => {
@@ -326,12 +363,10 @@ export default function Home() {
       if (i !== rowIdx) return row
       return row.map((tile, j) => {
         if (j !== colIdx) return tile
-        // When setting a char, if state is empty and char is non-empty, default to 'correct'
         const newState = char && tile.state === 'empty' ? 'correct' : tile.state
         return { ...tile, char, state: newState }
       })
     }))
-    // Trigger pop animation
     const tileKey = `${rowIdx}-${colIdx}`
     setPoppingTile(tileKey)
     setTimeout(() => setPoppingTile(null), 200)
@@ -339,11 +374,9 @@ export default function Home() {
 
   const handleTileClick = useCallback((rowIdx: number, colIdx: number, e?: React.MouseEvent) => {
     if (e?.button === 2) {
-      // Right-click cycles state
       e.preventDefault()
       cycleState(rowIdx, colIdx)
     } else {
-      // Left-click: if already selected, cycle state; otherwise select
       if (selectedCell?.row === rowIdx && selectedCell?.col === colIdx) {
         cycleState(rowIdx, colIdx)
       } else {
@@ -363,7 +396,6 @@ export default function Home() {
     if (!selectedCell) return
 
     if (key === '⌫') {
-      // Backspace: clear char and move back
       const { row, col } = selectedCell
       setChar(row, col, '')
       if (col > 0) {
@@ -374,83 +406,10 @@ export default function Home() {
 
     const { row, col } = selectedCell
     setChar(row, col, key)
-    // Move to next cell
     if (col < expressionLength - 1) {
       setSelectedCell({ row, col: col + 1 })
     }
   }, [selectedCell, expressionLength, setChar])
-
-  // ─── Physical keyboard support ────────────────────────────────────────────
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if user is typing in an input/textarea
-      const target = e.target as HTMLElement
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
-
-      if (!selectedCell) return
-
-      // Backspace
-      if (e.key === 'Backspace') {
-        e.preventDefault()
-        handleKeyPress('⌫')
-        return
-      }
-
-      // Delete key
-      if (e.key === 'Delete') {
-        e.preventDefault()
-        const { row, col } = selectedCell
-        setChar(row, col, '')
-        return
-      }
-
-      // Arrow keys for navigation
-      if (e.key === 'ArrowLeft' && selectedCell.col > 0) {
-        e.preventDefault()
-        setSelectedCell({ row: selectedCell.row, col: selectedCell.col - 1 })
-        return
-      }
-      if (e.key === 'ArrowRight' && selectedCell.col < expressionLength - 1) {
-        e.preventDefault()
-        setSelectedCell({ row: selectedCell.row, col: selectedCell.col + 1 })
-        return
-      }
-      if (e.key === 'ArrowUp' && selectedCell.row > 0) {
-        e.preventDefault()
-        setSelectedCell({ row: selectedCell.row - 1, col: selectedCell.col })
-        return
-      }
-      if (e.key === 'ArrowDown' && selectedCell.row < rows.length - 1) {
-        e.preventDefault()
-        setSelectedCell({ row: selectedCell.row + 1, col: selectedCell.col })
-        return
-      }
-
-      // Escape to deselect
-      if (e.key === 'Escape') {
-        setSelectedCell(null)
-        return
-      }
-
-      // Character input
-      let char = e.key
-      // Map 'a' to 'A' for permutation
-      if (char === 'a') char = 'A'
-      // Map '*' to display as '×' (but API uses '*')
-      if (char === '*') char = '×'
-      // Map '/' to display as '÷' (but API uses '/')
-      if (char === '/') char = '÷'
-
-      if (VALID_CHARS_SET.has(e.key) || (char === '×') || (char === '÷') || (char === 'A')) {
-        e.preventDefault()
-        handleKeyPress(char)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedCell, expressionLength, rows.length, handleKeyPress, setChar])
 
   // ─── Solve ─────────────────────────────────────────────────────────────────
 
@@ -461,18 +420,12 @@ export default function Home() {
     setResultFilter('')
 
     try {
-      // Convert display chars to API chars and filter empty rows
       const apiRows = rows
         .filter(row => row.some(t => t.char !== ''))
         .map(row => row.map(tile => ({
           char: DISPLAY_TO_API[tile.char] || tile.char,
           state: tile.state,
         })))
-
-      if (apiRows.length === 0) {
-        // No constraints - solve all equations of this length
-        // Still send an empty row to indicate we want to solve
-      }
 
       const body = {
         length: expressionLength,
@@ -482,11 +435,10 @@ export default function Home() {
         max_results: MAX_RESULTS_DEFAULT,
       }
 
-      // Try solving with up to 3 retries (solver may auto-restart between attempts)
       let data: any = null
       let res: Response | null = null
       const MAX_RETRIES = 3
-      const RETRY_DELAY = 3000 // 3s wait for solver to restart
+      const RETRY_DELAYS = [2000, 5000, 8000]
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
@@ -495,33 +447,54 @@ export default function Home() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           })
-          data = await res.json()
 
-          if (res.ok && data.success) break // Success!
-
-          if (data.error?.includes('not available') || data.error?.includes('busy')) {
-            // Solver might be restarting, wait and retry
+          const text = await res.text()
+          try {
+            data = JSON.parse(text)
+          } catch {
             if (attempt < MAX_RETRIES - 1) {
-              await new Promise(r => setTimeout(r, RETRY_DELAY))
+              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
+              continue
+            }
+            throw new Error('Solver is starting up, please try again in a few seconds')
+          }
+
+          if (res.ok && data.success) break
+
+          const errorMsg = data.error || ''
+          if (errorMsg.includes('not available') || errorMsg.includes('busy') || errorMsg.includes('starting') || errorMsg.includes('timed out') || errorMsg.includes('connection failed') || errorMsg.includes('restarting')) {
+            if (attempt < MAX_RETRIES - 1) {
+              await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
               continue
             }
           }
-          break // Other error, don't retry
-        } catch {
+          break
+        } catch (err) {
           if (attempt < MAX_RETRIES - 1) {
-            await new Promise(r => setTimeout(r, RETRY_DELAY))
+            await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
             continue
           }
-          throw new Error('Solver backend not available after retries')
+          const msg = err instanceof Error ? err.message : 'Unknown error'
+          if (msg.includes('fetch')) {
+            throw new Error('Could not reach solver. It may be starting up — please try again in a few seconds')
+          }
+          throw new Error(msg)
         }
       }
 
       if (!res || !data) {
-        throw new Error('Solver backend not available after retries')
+        throw new Error('Solver is not responding. It may be restarting — please try again shortly')
       }
 
       if (!res.ok || !data.success) {
-        throw new Error(data.error || `Solver returned status ${res.status}`)
+        const errMsg = data.error || `Solver returned status ${res.status}`
+        if (errMsg.includes('busy')) {
+          throw new Error('Solver is currently processing another request. Please wait a moment and try again')
+        }
+        if (errMsg.includes('not available') || errMsg.includes('connection failed')) {
+          throw new Error('Solver connection lost. It may be restarting — please try again shortly')
+        }
+        throw new Error(errMsg)
       }
 
       const result: SolveResult = data.data
@@ -537,12 +510,12 @@ export default function Home() {
         resultCount: result.results.length,
         elapsedMs: result.elapsed_ms,
         searchedCount: result.searched_count,
+        speedPerSec: result.speed_per_sec,
         recommended: result.recommended || '',
         maxResultsApplied,
       }
       setSolveHistory(prev => [historyEntry, ...prev].slice(0, MAX_SOLVE_HISTORY))
 
-      // Scroll to results
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       }, 100)
@@ -597,6 +570,89 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000)
   }, [exportState])
 
+  // ─── Physical keyboard support + keyboard shortcuts ────────────────────────
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+Enter to solve
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault()
+        if (!solvingRef.current) solve()
+        return
+      }
+
+      // Ctrl/Cmd+E to export/copy game state
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault()
+        copyState()
+        return
+      }
+
+      // Don't intercept if user is typing in an input/textarea
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+
+      if (!selectedCell) return
+
+      // Backspace
+      if (e.key === 'Backspace') {
+        e.preventDefault()
+        handleKeyPress('⌫')
+        return
+      }
+
+      // Delete key
+      if (e.key === 'Delete') {
+        e.preventDefault()
+        const { row, col } = selectedCell
+        setChar(row, col, '')
+        return
+      }
+
+      // Arrow keys for navigation
+      if (e.key === 'ArrowLeft' && selectedCell.col > 0) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row, col: selectedCell.col - 1 })
+        return
+      }
+      if (e.key === 'ArrowRight' && selectedCell.col < expressionLength - 1) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row, col: selectedCell.col + 1 })
+        return
+      }
+      if (e.key === 'ArrowUp' && selectedCell.row > 0) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row - 1, col: selectedCell.col })
+        return
+      }
+      if (e.key === 'ArrowDown' && selectedCell.row < rows.length - 1) {
+        e.preventDefault()
+        setSelectedCell({ row: selectedCell.row + 1, col: selectedCell.col })
+        return
+      }
+
+      // Escape to deselect
+      if (e.key === 'Escape') {
+        setSelectedCell(null)
+        return
+      }
+
+      // Character input
+      let char = e.key
+      if (char === 'a') char = 'A'
+      if (char === '*') char = '×'
+      if (char === '/') char = '÷'
+
+      if (VALID_CHARS_SET.has(e.key) || (char === '×') || (char === '÷') || (char === 'A')) {
+        e.preventDefault()
+        handleKeyPress(char)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedCell, expressionLength, rows.length, handleKeyPress, setChar, solve, copyState])
+
   // ─── Distributed workers ───────────────────────────────────────────────────
 
   const addWorker = useCallback(async () => {
@@ -620,7 +676,6 @@ export default function Home() {
         setWorkerAddress('')
       }
     } catch {
-      // Fallback: add locally
       const newWorker: WorkerNode = {
         id: Math.random().toString(36).substring(2, 8),
         address: workerAddress.trim(),
@@ -659,7 +714,6 @@ export default function Home() {
         formatExpression(expr).toLowerCase().includes(resultFilter.toLowerCase())
       )
     }
-    // Apply sort
     switch (resultSort) {
       case 'az':
         return [...results].sort((a, b) => a.localeCompare(b))
@@ -674,6 +728,139 @@ export default function Home() {
     }
   }, [solveResult, resultFilter, resultSort])
 
+  // ─── Constraint Summary ────────────────────────────────────────────────────
+
+  const constraintSummary = useMemo(() => {
+    const locked = new Map<string, number[]>()   // char → positions
+    const excluded = new Set<string>()            // chars
+    const hinted = new Map<string, number[]>()    // char → positions (present)
+
+    rows.forEach(row => {
+      row.forEach((tile, colIdx) => {
+        if (!tile.char) return
+        const apiChar = DISPLAY_TO_API[tile.char] || tile.char
+        if (tile.state === 'correct') {
+          const positions = locked.get(apiChar) || []
+          if (!positions.includes(colIdx)) positions.push(colIdx)
+          locked.set(apiChar, positions)
+        } else if (tile.state === 'absent') {
+          excluded.add(apiChar)
+        } else if (tile.state === 'present') {
+          const positions = hinted.get(apiChar) || []
+          if (!positions.includes(colIdx)) positions.push(colIdx)
+          hinted.set(apiChar, positions)
+        }
+      })
+    })
+
+    // Remove hinted chars that are also locked (they're already known)
+    locked.forEach((_, char) => hinted.delete(char))
+
+    return { locked, excluded, hinted }
+  }, [rows])
+
+  // ─── Smart Hints ───────────────────────────────────────────────────────────
+
+  const smartHints = useMemo((): SmartHint[] => {
+    if (!solveResult || solveResult.results.length <= 1 || !solveResult.char_probabilities.length) return []
+
+    // Get positions that already have "correct" constraints
+    const correctPositions = new Set<number>()
+    rows.forEach(row => {
+      row.forEach((tile, colIdx) => {
+        if (tile.state === 'correct' && tile.char) {
+          correctPositions.add(colIdx)
+        }
+      })
+    })
+
+    // Get chars that are already fully constrained (correct everywhere they appear)
+    const fullyConstrainedChars = new Set<string>()
+    rows.forEach(row => {
+      row.forEach(tile => {
+        if (tile.state === 'correct' && tile.char) {
+          fullyConstrainedChars.add(DISPLAY_TO_API[tile.char] || tile.char)
+        }
+      })
+    })
+
+    // Find high-probability chars at unconstrained positions
+    const hints: SmartHint[] = []
+    for (const cp of solveResult.char_probabilities) {
+      if (cp.probability < 5) continue // Skip very low probability
+      const displayChar = API_TO_DISPLAY[cp.char] || cp.char
+      const isFullyConstrained = fullyConstrainedChars.has(cp.char)
+
+      // For unconstrained positions, find the best position for this char
+      if (!isFullyConstrained) {
+        // Find positions where this char is likely but not yet constrained
+        for (let pos = 0; pos < expressionLength; pos++) {
+          if (correctPositions.has(pos)) continue
+
+          // Check if this position already has a correct constraint for another char
+          const hasConstraintAtPos = rows.some(row =>
+            row[pos]?.state === 'correct' && row[pos]?.char !== ''
+          )
+          if (hasConstraintAtPos) continue
+
+          hints.push({
+            char: cp.char,
+            displayChar,
+            position: pos,
+            probability: cp.probability,
+          })
+          break // One hint per char
+        }
+      }
+
+      if (hints.length >= 3) break
+    }
+
+    return hints.sort((a, b) => b.probability - a.probability).slice(0, 3)
+  }, [solveResult, rows, expressionLength])
+
+  // ─── Download handlers ─────────────────────────────────────────────────────
+
+  const handleDownload = useCallback((format: 'json' | 'txt') => {
+    if (!solveResult) return
+
+    let content: string
+    let filename: string
+    let mimeType: string
+
+    if (format === 'json') {
+      content = JSON.stringify(solveResult, null, 2)
+      filename = `sumzle-results-${Date.now()}.json`
+      mimeType = 'application/json'
+    } else {
+      content = solveResult.results.map(formatExpression).join('\n')
+      filename = `sumzle-results-${Date.now()}.txt`
+      mimeType = 'text/plain'
+    }
+
+    const blob = new Blob([content], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    setShowDownloadMenu(false)
+  }, [solveResult])
+
+  // ─── Recent solve speeds for bar chart ─────────────────────────────────────
+
+  const recentSpeeds = useMemo(() => {
+    return solveHistory.slice(0, 5).map(h => ({
+      id: h.id,
+      speed: h.speedPerSec,
+      elapsed: h.elapsedMs,
+      label: h.elapsedMs < 1000 ? `${h.elapsedMs.toFixed(0)}ms` : `${(h.elapsedMs / 1000).toFixed(1)}s`,
+    }))
+  }, [solveHistory])
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -682,6 +869,38 @@ export default function Home() {
         @keyframes shimmer {
           0% { background-position: 200% 0; }
           100% { background-position: -200% 0; }
+        }
+        @keyframes tileFlip {
+          0% { transform: rotateY(0deg); }
+          50% { transform: rotateY(90deg); }
+          100% { transform: rotateY(0deg); }
+        }
+        @keyframes tileGlow {
+          0%, 100% { box-shadow: 0 0 4px 1px rgba(16,185,129,0.3); }
+          50% { box-shadow: 0 0 12px 4px rgba(16,185,129,0.6); }
+        }
+        @keyframes pulseRing {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
+          50% { box-shadow: 0 0 0 6px rgba(16,185,129,0); }
+        }
+        .tile-flip {
+          animation: tileFlip 0.3s ease-in-out;
+        }
+        .tile-glow {
+          animation: tileGlow 1.5s ease-in-out;
+        }
+        .pulse-ring {
+          animation: pulseRing 1.5s ease-in-out infinite;
+        }
+        /* Noise texture for dark mode */
+        .dark-noise::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          opacity: 0.015;
+          pointer-events: none;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+          background-repeat: repeat;
         }
       `}</style>
       {/* ─── Header ──────────────────────────────────────────────────────────── */}
@@ -729,7 +948,7 @@ export default function Home() {
               variant="ghost"
               size="icon"
               onClick={() => setDarkMode(!darkMode)}
-              className="rounded-full"
+              className="rounded-full focus-visible:ring-2 focus-visible:ring-emerald-500"
               aria-label="Toggle theme"
             >
               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -746,7 +965,7 @@ export default function Home() {
           <div className="space-y-4">
 
             {/* Settings Card */}
-            <Card>
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <MonitorSmartphone className="w-4 h-4 text-emerald-500" />
@@ -760,7 +979,7 @@ export default function Home() {
                     <Button
                       variant="outline"
                       size="icon"
-                      className="h-8 w-8"
+                      className="h-8 w-8 focus-visible:ring-2 focus-visible:ring-emerald-500"
                       onClick={() => handleLengthChange(String(expressionLength - 1))}
                       disabled={expressionLength <= MIN_LENGTH}
                     >
@@ -777,7 +996,7 @@ export default function Home() {
                     <Button
                       variant="outline"
                       size="icon"
-                      className="h-8 w-8"
+                      className="h-8 w-8 focus-visible:ring-2 focus-visible:ring-emerald-500"
                       onClick={() => handleLengthChange(String(expressionLength + 1))}
                       disabled={expressionLength >= MAX_LENGTH}
                     >
@@ -786,20 +1005,20 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving}>
+                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <Plus className="w-3.5 h-3.5 mr-1" /> Add Row
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)} disabled={solving}>
+                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)} disabled={solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <Upload className="w-3.5 h-3.5 mr-1" /> Import
                   </Button>
-                  <Button variant="outline" size="sm" onClick={copyState}>
+                  <Button variant="outline" size="sm" onClick={copyState} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                     {copied ? <Check className="w-3.5 h-3.5 mr-1" /> : <Copy className="w-3.5 h-3.5 mr-1" />}
                     {copied ? 'Copied!' : 'Export'}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)}>
+                  <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <Network className="w-3.5 h-3.5 mr-1" /> Workers
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowHistory(!showHistory)} className="relative">
+                  <Button variant="outline" size="sm" onClick={() => setShowHistory(!showHistory)} className="relative focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <History className="w-3.5 h-3.5 mr-1" /> History
                     {solveHistory.length > 0 && (
                       <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] flex items-center justify-center font-bold">
@@ -807,7 +1026,7 @@ export default function Home() {
                       </span>
                     )}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500">
+                  <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <RefreshCw className="w-3.5 h-3.5 mr-1" /> Clear
                   </Button>
                 </div>
@@ -817,7 +1036,7 @@ export default function Home() {
             {/* Presets */}
             <div className="flex flex-wrap gap-1.5">
               <span className="text-xs text-zinc-500 dark:text-zinc-400 self-center mr-1">Presets:</span>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+              <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
                 setExpressionLength(5)
                 updateRowLengths(5)
                 setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]])
@@ -826,7 +1045,7 @@ export default function Home() {
               }}>
                 1+1=2
               </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+              <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
                 setExpressionLength(6)
                 updateRowLengths(6)
                 setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]])
@@ -835,7 +1054,7 @@ export default function Home() {
               }}>
                 Starter Len 6
               </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+              <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
                 setExpressionLength(8)
                 updateRowLengths(8)
                 setRows([
@@ -847,7 +1066,7 @@ export default function Home() {
               }}>
                 Hard Mode
               </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => {
+              <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
                 setExpressionLength(6)
                 updateRowLengths(6)
                 setRows([createEmptyRow(6)])
@@ -862,11 +1081,11 @@ export default function Home() {
 
             {/* Import Panel */}
             {showImport && (
-              <Card className="animate-in slide-in-from-top-2 duration-200">
+              <Card className="animate-in slide-in-from-top-2 duration-200 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base">Import Game State</CardTitle>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowImport(false)}>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setShowImport(false)}>
                       <X className="w-3 h-3" />
                     </Button>
                   </div>
@@ -879,7 +1098,7 @@ export default function Home() {
                     onChange={(e) => setImportText(e.target.value)}
                     className="font-mono text-xs min-h-24"
                   />
-                  <Button size="sm" onClick={handleImport} disabled={!importText.trim()}>
+                  <Button size="sm" onClick={handleImport} disabled={!importText.trim()} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                     <Upload className="w-3.5 h-3.5 mr-1" /> Import
                   </Button>
                 </CardContent>
@@ -888,7 +1107,7 @@ export default function Home() {
 
             {/* Solve History Panel */}
             {showHistory && (
-              <Card className="animate-in slide-in-from-top-2 duration-200">
+              <Card className="animate-in slide-in-from-top-2 duration-200 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base flex items-center gap-2">
@@ -901,7 +1120,7 @@ export default function Home() {
                           Clear
                         </Button>
                       )}
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowHistory(false)}>
+                      <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setShowHistory(false)}>
                         <X className="w-3 h-3" />
                       </Button>
                     </div>
@@ -946,6 +1165,11 @@ export default function Home() {
                               <span className="text-zinc-500">
                                 {entry.elapsedMs < 1000 ? `${entry.elapsedMs.toFixed(0)}ms` : `${(entry.elapsedMs / 1000).toFixed(2)}s`}
                               </span>
+                              {entry.speedPerSec > 0 && (
+                                <span className="text-zinc-400">
+                                  {formatSpeed(entry.speedPerSec)}
+                                </span>
+                              )}
                             </div>
                             {entry.recommended && (
                               <code className="text-xs font-mono font-bold text-amber-600 dark:text-amber-400">
@@ -963,14 +1187,14 @@ export default function Home() {
 
             {/* Distributed Computing Panel */}
             {showDistributed && (
-              <Card className="animate-in slide-in-from-top-2 duration-200">
+              <Card className="animate-in slide-in-from-top-2 duration-200 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Server className="w-4 h-4 text-teal-500" />
                       Distributed Workers
                     </CardTitle>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setShowDistributed(false)}>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setShowDistributed(false)}>
                       <X className="w-3 h-3" />
                     </Button>
                   </div>
@@ -984,7 +1208,7 @@ export default function Home() {
                       onChange={(e) => setWorkerAddress(e.target.value)}
                       className="h-8 text-sm"
                     />
-                    <Button size="sm" onClick={addWorker} disabled={!workerAddress.trim()}>
+                    <Button size="sm" onClick={addWorker} disabled={!workerAddress.trim()} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
                       <Plus className="w-3.5 h-3.5" />
                     </Button>
                   </div>
@@ -1006,7 +1230,7 @@ export default function Home() {
                               {w.status}
                             </Badge>
                           </div>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeWorker(w.id)}>
+                          <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => removeWorker(w.id)}>
                             <Trash2 className="w-3 h-3 text-zinc-400" />
                           </Button>
                         </div>
@@ -1018,7 +1242,7 @@ export default function Home() {
             )}
 
             {/* Constraint Board */}
-            <Card>
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Activity className="w-4 h-4 text-emerald-500" />
@@ -1034,7 +1258,7 @@ export default function Home() {
                   {STATE_ORDER.map(s => (
                     <span
                       key={s}
-                      className={`px-2 py-0.5 rounded border text-xs font-medium ${STATE_COLORS[s]}`}
+                      className={`px-2 py-0.5 rounded-lg border text-xs font-medium ${STATE_COLORS[s]}`}
                     >
                       {STATE_LABELS[s]}
                     </span>
@@ -1051,6 +1275,13 @@ export default function Home() {
                           const isSelected = selectedCell?.row === rowIdx && selectedCell?.col === colIdx
                           const tileKey = `${rowIdx}-${colIdx}`
                           const isPopping = poppingTile === tileKey
+                          const isFlipping = flippingTile === tileKey
+                          // Check if this tile matches the recommended solution
+                          const isRecommended = solveResult?.recommended &&
+                            tile.state === 'correct' &&
+                            colIdx < solveResult.recommended.length &&
+                            (DISPLAY_TO_API[tile.char] || tile.char) === solveResult.recommended[colIdx]
+
                           return (
                             <button
                               key={colIdx}
@@ -1059,17 +1290,19 @@ export default function Home() {
                                 flex items-center justify-center transition-all duration-150 select-none
                                 relative
                                 ${STATE_COLORS[tile.state]}
-                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md animate-pulse' : ''}
+                                ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md pulse-ring' : ''}
                                 ${isPopping ? 'scale-110' : ''}
+                                ${isFlipping ? 'tile-flip' : ''}
+                                ${isRecommended ? 'tile-glow' : ''}
                                 hover:scale-105 active:scale-95
                               `}
+                              style={{ perspective: '400px', transformStyle: 'preserve-3d' }}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
                               onContextMenu={(e) => handleTileContextMenu(e, rowIdx, colIdx)}
                               title={`Position ${colIdx + 1}`}
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
-                              {/* Subtle separator line between tiles */}
                               {colIdx < row.length - 1 && (
                                 <span className="absolute -right-[3px] top-1/2 -translate-y-1/2 w-[1px] h-5 bg-zinc-200 dark:bg-zinc-700 opacity-50" />
                               )}
@@ -1081,7 +1314,7 @@ export default function Home() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
                           onClick={() => clearRow(rowIdx)}
                           title="Clear row"
                         >
@@ -1091,7 +1324,7 @@ export default function Home() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-zinc-400 hover:text-red-500"
+                            className="h-7 w-7 text-zinc-400 hover:text-red-500 focus-visible:ring-2 focus-visible:ring-emerald-500"
                             onClick={() => removeRow(rowIdx)}
                             title="Remove row"
                           >
@@ -1105,15 +1338,57 @@ export default function Home() {
               </CardContent>
             </Card>
 
+            {/* Constraint Summary Bar */}
+            {(() => {
+              const { locked, excluded, hinted } = constraintSummary
+              const hasAnyConstraints = locked.size > 0 || excluded.size > 0 || hinted.size > 0
+              if (!hasAnyConstraints) return null
+
+              return (
+                <div className="p-3 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="w-3.5 h-3.5 text-emerald-500" />
+                    <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Constraints</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {Array.from(locked.entries()).map(([char, positions]) => (
+                      <span
+                        key={`lock-${char}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
+                      >
+                        🟩 {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">{positions.map(p => p + 1).join(',')}</sub>
+                      </span>
+                    ))}
+                    {Array.from(hinted.entries()).map(([char, positions]) => (
+                      <span
+                        key={`hint-${char}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800"
+                      >
+                        🟨 {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">≠{positions.map(p => p + 1).join(',')}</sub>
+                      </span>
+                    ))}
+                    {Array.from(excluded).map((char) => (
+                      <span
+                        key={`excl-${char}`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700"
+                      >
+                        ⬛ {API_TO_DISPLAY[char] || char}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* Keyboard */}
-            <Card>
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
                     onClick={() => setShowShortcuts(!showShortcuts)}
                     title="Keyboard shortcuts"
                   >
@@ -1121,8 +1396,9 @@ export default function Home() {
                   </Button>
                 </div>
                 {showShortcuts && (
-                  <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150">
-                    ←→ Navigate &nbsp;|&nbsp; ↑↓ Row &nbsp;|&nbsp; ⌫ Delete &nbsp;|&nbsp; Esc Deselect &nbsp;|&nbsp; Click: Select/Cycle
+                  <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150 space-y-1">
+                    <div>←→ Navigate &nbsp;|&nbsp; ↑↓ Row &nbsp;|&nbsp; ⌫ Delete &nbsp;|&nbsp; Esc Deselect &nbsp;|&nbsp; Click: Select/Cycle</div>
+                    <div className="text-emerald-600 dark:text-emerald-400 font-medium">⌘↵ / Ctrl+Enter: Solve &nbsp;|&nbsp; ⌘E / Ctrl+E: Export</div>
                   </div>
                 )}
                 <div className="space-y-1.5">
@@ -1134,7 +1410,7 @@ export default function Home() {
                           variant="outline"
                           size="sm"
                           className={`
-                            h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100
+                            h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500
                             ${key === '⌫' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
                             ${selectedCell
                               ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
@@ -1183,11 +1459,14 @@ export default function Home() {
               ))
             })()}
 
-            {/* Solve Button - with gradient border effect */}
-            <div className="relative group">
+            {/* Gradient divider before solve button */}
+            <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent" />
+
+            {/* Solve Button - with gradient border effect + shortcut badge */}
+            <div className="relative group lg:static sticky bottom-4 z-40">
               <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
               <Button
-                className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl"
+                className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl focus-visible:ring-2 focus-visible:ring-emerald-500"
                 onClick={solve}
                 disabled={solving}
                 size="lg"
@@ -1201,6 +1480,7 @@ export default function Home() {
                   <>
                     <Play className="w-5 h-5 mr-2" />
                     Solve with Rust Engine
+                    <span className="ml-2 text-xs opacity-70 font-normal hidden sm:inline">⌘↵</span>
                   </>
                 )}
               </Button>
@@ -1208,7 +1488,7 @@ export default function Home() {
 
             {/* Solve Error */}
             {solveError && (
-              <Card className="border-red-300 dark:border-red-800 animate-in slide-in-from-top-2 duration-200">
+              <Card className="border-red-300 dark:border-red-800 animate-in slide-in-from-top-2 duration-200 shadow-md shadow-red-200/50 dark:shadow-red-900/30">
                 <CardContent className="pt-5">
                   <div className="flex items-start gap-2">
                     <X className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
@@ -1224,7 +1504,7 @@ export default function Home() {
 
             {/* Stats Card */}
             {(solveResult || health) && (
-              <Card>
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Gauge className="w-4 h-4 text-emerald-500" />
@@ -1263,15 +1543,70 @@ export default function Home() {
                     )}
                   </div>
                   {solveResult && (
-                    <div className="mt-3 flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-100 dark:border-emerald-900/50">
-                      <span className="text-sm font-medium flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                        Solve Speed
-                      </span>
-                      <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
-                        {formatSpeed(solveResult.speed_per_sec)}
-                      </span>
-                    </div>
+                    <>
+                      {/* Speed gauge */}
+                      <div className="mt-3 space-y-2">
+                        <div className="flex items-center justify-between p-2.5 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-100 dark:border-emerald-900/50">
+                          <span className="text-sm font-medium flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
+                            Solve Speed
+                          </span>
+                          <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                            {formatSpeed(solveResult.speed_per_sec)}
+                          </span>
+                        </div>
+                        {/* Speed gauge visual */}
+                        <div className="px-1">
+                          <div className="h-3 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-emerald-400 via-teal-500 to-cyan-500 transition-all duration-1000 ease-out"
+                              style={{ width: `${Math.min(100, (solveResult.speed_per_sec / 2000000) * 100)}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-[9px] text-zinc-400 mt-0.5">
+                            <span>0</span>
+                            <span>1M/s</span>
+                            <span>2M/s</span>
+                          </div>
+                        </div>
+                        {/* Expressions/ms */}
+                        <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 px-1">
+                          <span className="flex items-center gap-1">
+                            <TrendingUp className="w-3 h-3" />
+                            Throughput
+                          </span>
+                          <span className="font-mono font-bold text-teal-600 dark:text-teal-400">
+                            {(solveResult.speed_per_sec / 1000).toFixed(1)}K expr/ms
+                          </span>
+                        </div>
+                      </div>
+                      {/* Recent solve speeds bar chart */}
+                      {recentSpeeds.length > 1 && (
+                        <div className="mt-3 p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                              <BarChart3 className="w-3 h-3" /> Recent Solves
+                            </span>
+                          </div>
+                          <div className="flex items-end gap-1.5 h-12">
+                            {[...recentSpeeds].reverse().map((s, i) => {
+                              const maxSpeed = Math.max(...recentSpeeds.map(r => r.speed), 1)
+                              const height = Math.max(8, (s.speed / maxSpeed) * 100)
+                              return (
+                                <div key={s.id} className="flex-1 flex flex-col items-center gap-0.5">
+                                  <span className="text-[8px] text-zinc-400 font-mono">{s.label}</span>
+                                  <div
+                                    className="w-full rounded-sm bg-gradient-to-t from-emerald-500 to-teal-400 dark:from-emerald-600 dark:to-teal-500 transition-all duration-500"
+                                    style={{ height: `${height}%` }}
+                                    title={`${formatSpeed(s.speed)}`}
+                                  />
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                   {health && (
                     <div className="mt-2 flex items-center justify-between p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 text-xs text-zinc-500">
@@ -1291,7 +1626,7 @@ export default function Home() {
 
             {/* Solving Progress */}
             {solving && (
-              <Card className="animate-in slide-in-from-top-2 duration-200">
+              <Card className="animate-in slide-in-from-top-2 duration-200 shadow-md shadow-emerald-200/30 dark:shadow-emerald-900/30">
                 <CardContent className="pt-5 space-y-3">
                   <div className="flex items-center gap-2">
                     <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
@@ -1307,7 +1642,7 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <Card className="animate-in slide-in-from-bottom-4 duration-500">
+              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-3">
                   <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
@@ -1321,7 +1656,7 @@ export default function Home() {
                         : `${solveResult.results.length.toLocaleString()} found`
                       }
                       {celebrating && (
-                        <span className="absolute -top-2 -right-2 text-sm">\u2728</span>
+                        <span className="absolute -top-2 -right-2 text-sm">{'\u2728'}</span>
                       )}
                     </Badge>
                   </div>
@@ -1341,13 +1676,40 @@ export default function Home() {
                     </TabsList>
 
                     <TabsContent value="solutions">
-                      {solveResult.results.length === 0 ? (
-                        <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-6">
-                          No solutions found. Try adjusting constraints.
-                        </p>
-                      ) : (
+                      {/* Unique solution banner */}
+                      {solveResult.results.length === 1 && (
+                        <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-200 dark:border-emerald-800 text-center animate-in zoom-in-50 duration-300">
+                          <span className="text-2xl mb-1 block">{'🎉'}</span>
+                          <p className="text-sm font-bold text-emerald-700 dark:text-emerald-400">Unique Solution Found!</p>
+                          <code className="text-lg font-mono font-black text-emerald-600 dark:text-emerald-300 tracking-widest">
+                            {formatExpression(solveResult.results[0])}
+                          </code>
+                        </div>
+                      )}
+
+                      {/* No results helpful message */}
+                      {solveResult.results.length === 0 && (
+                        <div className="mb-3 p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-center">
+                          <span className="text-2xl mb-2 block">{'🔍'}</span>
+                          <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">No solutions found</p>
+                          <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+                            <p>Try these to find results:</p>
+                            <p className="flex items-center justify-center gap-1">
+                              <ArrowRight className="w-3 h-3" /> Remove or change an absent constraint
+                            </p>
+                            <p className="flex items-center justify-center gap-1">
+                              <ArrowRight className="w-3 h-3" /> Check if the &ldquo;=&rdquo; position is correct
+                            </p>
+                            <p className="flex items-center justify-center gap-1">
+                              <ArrowRight className="w-3 h-3" /> Try changing a &ldquo;present&rdquo; to &ldquo;absent&rdquo;
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {solveResult.results.length > 1 && (
                         <div className="space-y-2 mt-2">
-                          {/* Search/Filter + Sort */}
+                          {/* Search/Filter + Sort + Download */}
                           <div className="flex gap-2">
                             <div className="relative flex-1">
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
@@ -1355,13 +1717,13 @@ export default function Home() {
                                 placeholder="Filter solutions... (e.g. 1+2=3)"
                                 value={resultFilter}
                                 onChange={(e) => setResultFilter(e.target.value)}
-                                className="h-8 text-sm pl-8 pr-8"
+                                className="h-8 text-sm pl-8 pr-8 focus-visible:ring-2 focus-visible:ring-emerald-500"
                               />
                               {resultFilter && (
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="absolute right-0.5 top-1/2 -translate-y-1/2 h-7 w-7"
+                                  className="absolute right-0.5 top-1/2 -translate-y-1/2 h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
                                   onClick={() => setResultFilter('')}
                                 >
                                   <X className="w-3 h-3" />
@@ -1369,7 +1731,7 @@ export default function Home() {
                               )}
                             </div>
                             <select
-                              className="h-8 text-xs border border-zinc-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 px-2 text-zinc-600 dark:text-zinc-400"
+                              className="h-8 text-xs border border-zinc-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 px-2 text-zinc-600 dark:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500"
                               value={resultSort}
                               onChange={(e) => setResultSort(e.target.value as typeof resultSort)}
                             >
@@ -1379,6 +1741,34 @@ export default function Home() {
                               <option value="shortest">Shortest</option>
                               <option value="longest">Longest</option>
                             </select>
+                            {/* Download button */}
+                            <div className="relative" ref={downloadMenuRef}>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 px-2 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                                title="Download results"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                              </Button>
+                              {showDownloadMenu && (
+                                <div className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-1 duration-150">
+                                  <button
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-t-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('json')}
+                                  >
+                                    📄 JSON (full data)
+                                  </button>
+                                  <button
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('txt')}
+                                  >
+                                    📝 Plain text (list)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
 
                           {/* Result count info */}
@@ -1388,39 +1778,50 @@ export default function Home() {
                             </p>
                           )}
 
-                          {/* Results list */}
-                          <div className="max-h-96 overflow-y-auto space-y-0.5 scrollbar-thin">
-                            {filteredResults.slice(0, 500).map((expr, idx) => (
-                              <div
-                                key={idx}
-                                className={`flex items-center gap-2 p-2 rounded-lg transition-colors group
-                                  hover:bg-zinc-100 dark:hover:bg-zinc-800
-                                  ${expr === solveResult.recommended
-                                    ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800'
-                                    : 'border border-transparent'
-                                  }
-                                `}
-                              >
-                                <span className="text-xs text-zinc-400 w-8 text-right font-mono group-hover:text-zinc-600 dark:group-hover:text-zinc-300">{idx + 1}</span>
-                                <code className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">{formatExpression(expr)}</code>
-                                {expr === solveResult.recommended && (
-                                  <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                                )}
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                                  onClick={async () => {
-                                    await navigator.clipboard.writeText(formatExpression(expr))
-                                    setCopiedResult(expr)
-                                    setTimeout(() => setCopiedResult(null), 1500)
-                                  }}
-                                  title="Copy expression"
+                          {/* Results list with zebra striping */}
+                          <div className="max-h-96 overflow-y-auto space-y-0 scrollbar-thin rounded-lg border border-zinc-100 dark:border-zinc-800">
+                            {filteredResults.slice(0, 500).map((expr, idx) => {
+                              const isRecommended = expr === solveResult.recommended
+                              const exprType = getExpressionType(expr)
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`flex items-center gap-2 p-2 transition-colors group
+                                    ${idx % 2 === 0 ? 'bg-white dark:bg-zinc-900' : 'bg-zinc-50 dark:bg-zinc-800/30'}
+                                    hover:bg-emerald-50 dark:hover:bg-emerald-950/20
+                                    ${isRecommended
+                                      ? '!bg-amber-50 dark:!bg-amber-950/20 border-l-2 border-l-amber-400 dark:border-l-amber-600'
+                                      : ''
+                                    }
+                                  `}
                                 >
-                                  {copiedResult === expr ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-zinc-400" />}
-                                </Button>
-                              </div>
-                            ))}
+                                  <span className="text-xs text-zinc-400 w-8 text-right font-mono group-hover:text-zinc-600 dark:group-hover:text-zinc-300">{idx + 1}</span>
+                                  <code className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">{formatExpression(expr)}</code>
+                                  {/* Expression type tag */}
+                                  {exprType === 'comparison' && (
+                                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-teal-300 text-teal-600 dark:border-teal-700 dark:text-teal-400 shrink-0">
+                                      cmp
+                                    </Badge>
+                                  )}
+                                  {isRecommended && (
+                                    <Trophy className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={async () => {
+                                      await navigator.clipboard.writeText(formatExpression(expr))
+                                      setCopiedResult(expr)
+                                      setTimeout(() => setCopiedResult(null), 1500)
+                                    }}
+                                    title="Copy expression"
+                                  >
+                                    {copiedResult === expr ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-zinc-400" />}
+                                  </Button>
+                                </div>
+                              )
+                            })}
                             {filteredResults.length > 500 && (
                               <p className="text-xs text-zinc-400 text-center py-2">
                                 Showing 500 of {filteredResults.length.toLocaleString()} filtered solutions
@@ -1448,7 +1849,6 @@ export default function Home() {
                             .map((cp, idx) => {
                               const displayChar = API_TO_DISPLAY[cp.char] || cp.char
                               const barWidth = Math.min(cp.probability, 100)
-                              // Color coding based on probability
                               const barColor = cp.probability >= 30
                                 ? 'from-emerald-400 to-teal-500'
                                 : cp.probability >= 15
@@ -1480,16 +1880,9 @@ export default function Home() {
                                       )}
                                     </div>
                                   </div>
-                                  {cp.probability < 8 && (
-                                    <span className="text-xs text-zinc-500 w-14 text-right font-mono shrink-0">
-                                      {cp.probability.toFixed(1)}%
-                                    </span>
-                                  )}
-                                  {cp.probability >= 8 && (
-                                    <span className="text-xs text-zinc-400 w-14 text-right font-mono shrink-0">
-                                      {cp.probability.toFixed(1)}%
-                                    </span>
-                                  )}
+                                  <span className={`text-xs w-14 text-right font-mono shrink-0 ${cp.probability >= 8 ? 'text-zinc-400' : 'text-zinc-500'}`}>
+                                    {cp.probability.toFixed(1)}%
+                                  </span>
                                 </div>
                               )
                             })}
@@ -1524,9 +1917,57 @@ export default function Home() {
               </Card>
             )}
 
+            {/* Smart Hints Card */}
+            {solveResult && solveResult.results.length > 1 && smartHints.length > 0 && (
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+                <CardHeader className="pb-2">
+                  <div
+                    className="flex items-center justify-between cursor-pointer"
+                    onClick={() => setShowHints(!showHints)}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={showHints}
+                  >
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Lightbulb className="w-4 h-4 text-amber-500" />
+                      Smart Hints
+                    </CardTitle>
+                    {showHints ? <ChevronUp className="w-4 h-4 text-zinc-400" /> : <ChevronDown className="w-4 h-4 text-zinc-400" />}
+                  </div>
+                  <CardDescription>Suggestions to narrow down results</CardDescription>
+                </CardHeader>
+                {showHints && (
+                  <CardContent className="pt-0 space-y-2">
+                    {smartHints.map((hint, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-3 p-2.5 rounded-lg bg-gradient-to-r from-amber-50 to-teal-50 dark:from-amber-950/20 dark:to-teal-950/20 border border-amber-100 dark:border-amber-900/30"
+                      >
+                        <span className="text-lg">{'💡'}</span>
+                        <div className="flex-1">
+                          <p className="text-xs text-zinc-700 dark:text-zinc-300">
+                            Try constraining <strong className="font-mono text-amber-600 dark:text-amber-400">{hint.displayChar}</strong> at position <strong>{hint.position + 1}</strong>
+                          </p>
+                          <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                            Appears in {hint.probability.toFixed(0)}% of remaining solutions
+                          </p>
+                        </div>
+                        <div className="w-12 h-12 rounded-lg bg-amber-100 dark:bg-amber-900/30 border-2 border-amber-300 dark:border-amber-700 flex items-center justify-center font-mono font-bold text-lg text-amber-700 dark:text-amber-400 shrink-0">
+                          {hint.displayChar}
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-zinc-400 text-center pt-1">
+                      Based on character probability analysis of {solveResult.results.length.toLocaleString()} solutions
+                    </p>
+                  </CardContent>
+                )}
+              </Card>
+            )}
+
             {/* Empty state - Compact "Ready to Solve" placeholder */}
             {!solveResult && !solving && (
-              <Card className="transition-all duration-500">
+              <Card className="transition-all duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardContent className="pt-5">
                   <div className="text-center mb-4">
                     <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-900/30 dark:to-teal-900/30 flex items-center justify-center border border-emerald-200 dark:border-emerald-800">
@@ -1549,7 +1990,7 @@ export default function Home() {
                     </div>
                     <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">3</span>
-                      <span className="text-zinc-600 dark:text-zinc-400">Hit Solve!</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Hit Solve! (⌘↵)</span>
                     </div>
                     <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <Target className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
@@ -1557,17 +1998,17 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <Separator className="mb-3" />
+                  <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent mb-3" />
 
                   {/* Example game state */}
                   <div className="text-center">
                     <p className="text-[10px] text-zinc-400 mb-1.5">Example: 1+2=3 with constraints</p>
                     <div className="flex justify-center gap-0.5">
-                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">1</div>
-                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">+</div>
-                      <div className="w-8 h-8 rounded border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-sm flex items-center justify-center">2</div>
-                      <div className="w-8 h-8 rounded border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center">=</div>
-                      <div className="w-8 h-8 rounded border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-sm flex items-center justify-center">3</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center shadow-inner">1</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center shadow-inner">+</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-sm flex items-center justify-center shadow-inner">2</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center shadow-inner">=</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-sm flex items-center justify-center shadow-inner">3</div>
                     </div>
                     <p className="text-[10px] text-zinc-400 mt-1">🟩 Right spot · 🟨 Wrong spot · ⬛ Not in equation</p>
                   </div>
@@ -1575,8 +2016,11 @@ export default function Home() {
               </Card>
             )}
 
+            {/* Gradient divider */}
+            <div className="h-px bg-gradient-to-r from-transparent via-teal-500/30 to-transparent" />
+
             {/* How to Play */}
-            <Card>
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Hash className="w-4 h-4 text-emerald-500" />
@@ -1585,7 +2029,7 @@ export default function Home() {
               </CardHeader>
               <CardContent className="text-sm text-zinc-600 dark:text-zinc-400 space-y-3">
                 <p>Sumzle is a math-based Wordle where you guess valid equations like <code className="text-xs bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">1+2=3</code>.</p>
-                <Separator />
+                <div className="h-px bg-gradient-to-r from-transparent via-zinc-200 dark:via-zinc-700 to-transparent" />
                 <div className="space-y-1.5">
                   <p className="flex items-center gap-2">
                     <span className="inline-block w-4 h-4 rounded bg-emerald-500 shrink-0" />
@@ -1600,13 +2044,14 @@ export default function Home() {
                     <strong>Gray</strong> — Character is not in the equation
                   </p>
                 </div>
-                <Separator />
+                <div className="h-px bg-gradient-to-r from-transparent via-zinc-200 dark:via-zinc-700 to-transparent" />
                 <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-500">
                   <p>&#8226; Click a tile to select, then type a character</p>
                   <p>&#8226; Click the same tile again (or right-click) to cycle its color</p>
                   <p>&#8226; Use arrow keys to navigate between tiles</p>
                   <p>&#8226; Supports: +−×÷%^=()![]A (permutation)</p>
                   <p>&#8226; <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">[x/y]</code> = floor division, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">n!</code> = factorial, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">mAn</code> = permutation</p>
+                  <p>&#8226; <strong className="text-emerald-600 dark:text-emerald-400">Keyboard shortcuts:</strong> ⌘↵ Solve, ⌘E Export</p>
                 </div>
               </CardContent>
             </Card>
@@ -1621,13 +2066,17 @@ export default function Home() {
             <Zap className="w-3.5 h-3.5 text-emerald-500" />
             <span>Sumzle HP Solver — Powered by Rust</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap justify-center">
             {health && (
               <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 Engine v{health.version} · {formatUptime(health.uptime_secs)}
               </span>
             )}
+            <span className="flex items-center gap-1.5">
+              <Cpu className="w-3 h-3" />
+              {health?.cpu_cores || '?'} cores · {health?.parallel_threads || '?'} threads
+            </span>
             <span>Parallel Multi-Core Solver</span>
           </div>
         </div>

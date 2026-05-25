@@ -1,9 +1,9 @@
 # Sumzle HP Solver - Project Worklog
 
 ## Project Status
-- **Phase**: Feature-Complete with Enhanced UI
-- **Overall Status**: Stable and functional - Rust solver + Next.js frontend + auto-restart proxy
-- **Last Updated**: Task ID 9 (2025-05-24)
+- **Phase**: Feature-Complete with Enhanced UI + Robust Error Handling
+- **Overall Status**: Stable and functional - Rust solver + Next.js frontend + auto-restart proxy + watchdog
+- **Last Updated**: Task ID 11 (2025-05-25)
 
 ## Task ID: 1
 **Agent**: Main Coordinator
@@ -341,5 +341,170 @@ Recommended Next Steps:
 3. Fix Rayon parallel mode (use std::thread instead of spawn_blocking for Rayon)
 4. Test distributed computing end-to-end with actual worker nodes
 5. Add behavioral consistency test suite (compare JS solver results vs Rust solver)
-6. Add result export (CSV/JSON download of all solutions)
-7. Add "Smart Hint" feature that suggests which constraint to add next based on current results
+
+---
+
+## Task ID: 10
+**Agent**: Full-Stack Developer
+**Task**: Enhance Sumzle HP Solver Frontend with New Features and Improved Styling
+
+### Work Log:
+1. **Smart Hint System**: Implemented a collapsible "Smart Hints" card below the results that suggests which constraint would narrow results the most:
+   - Analyzes `char_probabilities` from solve results
+   - Finds characters with highest probability that are NOT yet constrained as "correct"
+   - Shows up to 3 hints, each with the character, position, and probability percentage
+   - Each hint displays a visual tile with the suggested character
+   - Collapsible with show/hide toggle
+   - New state: `showHints`, new `useMemo`: `smartHints`, new type: `SmartHint`
+
+2. **Result Download/Export**: Added download functionality for solve results:
+   - Download button (Download icon) next to filter/sort controls in Solutions tab
+   - Dropdown menu with two format options: JSON (full result object) and Plain text (one expression per line)
+   - Uses `Blob` and `URL.createObjectURL` for client-side download
+   - Click-outside-to-close behavior for the dropdown
+   - New state: `showDownloadMenu`, new ref: `downloadMenuRef`, new handler: `handleDownload`
+
+3. **Keyboard Shortcuts Enhancement**:
+   - Ctrl+Enter (or Cmd+Enter) triggers solve from anywhere on the page
+   - Ctrl+E (or Cmd+E) copies/export game state to clipboard
+   - Updated shortcuts help panel to show: "⌘↵ / Ctrl+Enter: Solve | ⌘E / Ctrl+E: Export"
+   - Added "⌘↵" badge on the solve button text
+   - Fixed ordering issue: moved physical keyboard useEffect after `solve` and `copyState` definitions to prevent "Cannot access before initialization" error
+
+4. **Constraint Summary Bar**: Added compact visual summary of current constraints between the board and solve button:
+   - Shows "locked" characters (correct state) with 🟩 green pills and position numbers
+   - Shows "hinted" characters (present state) with 🟨 amber pills and excluded positions
+   - Shows "excluded" characters (absent state) with ⬛ gray pills
+   - Uses `useMemo` for efficient computation: `constraintSummary`
+   - Only shown when at least one constraint exists
+
+5. **Enhanced Tile Styling**:
+   - Added CSS flip animation (`rotateY`) when cycling tile state via `tileFlip` keyframe animation
+   - Added glow effect (`tileGlow` keyframe) on tiles that match the recommended solution
+   - Improved tile border radius to `rounded-lg`
+   - Added `perspective` and `transformStyle: preserve-3d` for 3D flip effect
+   - Replaced `animate-pulse` on selected tile with custom `pulse-ring` animation for a cleaner ring effect
+   - New state: `flippingTile`, new CSS: `tileFlip`, `tileGlow`, `pulseRing` keyframes
+
+6. **Result Card Polish**:
+   - When exactly 1 result: Special "🎉 Unique Solution Found!" banner with zoom-in animation
+   - When 0 results: Helpful message with 3 actionable suggestions (remove absent, check = position, change present to absent)
+   - Zebra striping in results list (alternating `bg-white`/`bg-zinc-50` rows) within bordered container
+   - Expression type tag: "cmp" badge for comparison expressions (containing `>`)
+   - Recommended result now has a left border accent instead of full border
+
+7. **Performance Stats Enhancement**:
+   - Added visual speed gauge bar below the speed display (gradient from emerald to teal to cyan, scaled to 2M/s max)
+   - Added "expressions/ms" throughput display (e.g., "1.7K expr/ms")
+   - Added bar chart of recent solve speeds (last 5 from history) with labeled time per solve
+   - History entries now track `speedPerSec` for chart data
+   - New `useMemo`: `recentSpeeds`, new imports: `TrendingUp`
+
+8. **Styling Improvements**:
+   - Added subtle noise texture CSS for dark mode background (`.dark-noise::before` with SVG filter)
+   - Improved card shadows: `shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50` on all cards
+   - Better focus states: Added `focus-visible:ring-2 focus-visible:ring-emerald-500` on all interactive elements
+   - Mobile sticky solve button: Added `lg:static sticky bottom-4 z-40` for mobile, static on desktop
+   - Gradient dividers between sections (`from-transparent via-emerald-500/30 to-transparent`)
+   - Improved footer: Added CPU cores/threads display alongside engine version and uptime
+   - Tile `rounded-lg` border radius and `shadow-inner` on example tiles
+
+9. **Bug Fix**: Fixed runtime error "Cannot access 'solve' before initialization" by moving the physical keyboard `useEffect` to after the `solve` and `copyState` callback definitions.
+
+### Stage Summary:
+- All 7 feature groups + styling improvements implemented in `src/app/page.tsx`
+- File grew from 1658 to ~1800 lines
+- Lint passes clean
+- All existing functionality preserved (solve, import/export, history, keyboard, distributed workers)
+- No changes to Rust backend or API route
+- New state variables: `showHints`, `showDownloadMenu`, `flippingTile`
+- New memos: `smartHints`, `constraintSummary`, `recentSpeeds`
+- New CSS keyframes: `tileFlip`, `tileGlow`, `pulseRing`, `dark-noise`
+- New imports: `Download`, `Lightbulb`, `TrendingUp`
+- Keyboard shortcuts now include Ctrl+Enter (solve) and Ctrl+E (export)
+
+---
+
+## Task ID: 11
+**Agent**: Main Coordinator (Bug Fix + QA + Feature Enhancement)
+**Task**: Fix solver backend connectivity error, QA test, and add new features
+
+### Work Log:
+1. **Diagnosed "Solver backend not available" error**: User reported error: `Unexpected token 'F', "Failed to "... is not valid JSON`. Root cause: proxy route tried `res.json()` on non-JSON responses from the Rust solver (when solver was down or restarting), causing JSON parse errors to bubble up as raw technical messages.
+
+2. **Rewrote API proxy route** (`src/app/api/[[...path]]/route.ts`):
+   - Added `safeParseJson()` helper that uses `res.text()` + `JSON.parse()` with error handling
+   - Added `fetchSolver()` centralized function for all solver requests
+   - Added `tryStartSolver()` function with deduplication (prevents multiple simultaneous startup attempts)
+   - Replaced raw JSON parse errors with user-friendly messages
+   - Translated technical errors: ECONNREFUSED → "Solver is starting up", fetch failed → "Solver connection failed", abort → "Solver request timed out"
+   - All responses always return valid JSON, even on errors
+
+3. **Fixed watchdog stack size**: Changed `RUST_MIN_STACK` from 4MB (`4194304`) to 16MB (`16777216`) in both `watchdog.ts` and `wrapper.ts` to prevent stack overflow on longer expressions.
+
+4. **Enhanced frontend error handling** (`src/app/page.tsx`):
+   - Replaced `res.json()` with safe `res.text()` + `JSON.parse()` in the solve function
+   - Added progressive retry delays (2s → 5s → 8s instead of fixed 3s)
+   - Added retryable error detection: "not available", "busy", "starting", "timed out", "connection failed", "restarting"
+   - Translated technical errors into user-friendly messages:
+     - "busy" → "Solver is currently processing another request. Please wait a moment and try again"
+     - "not available"/"connection failed" → "Solver connection lost. It may be restarting — please try again shortly"
+     - fetch errors → "Could not reach solver. It may be starting up — please try again in a few seconds"
+
+5. **Restarted solver via watchdog**: Killed old solver process and started it via `bun run dev` in the `mini-services/sumzle-solver/` directory, which uses the watchdog with 16MB stack and auto-restart.
+
+6. **QA testing with agent-browser**:
+   - ✅ Page loads correctly with all features
+   - ✅ Preset "1+1=2" → solve → "1 found" with "🎉 Unique Solution Found!" banner
+   - ✅ Preset "Starter Len 6" → solve → "0 found" with helpful suggestions
+   - ✅ Full Clear → solve → "500+ found" with Smart Hints showing probabilities
+   - ✅ Theme toggle (dark/light) works
+   - ✅ Solve button shows "⌘↵" shortcut badge
+   - ✅ Download button present in Solutions tab
+   - ✅ Smart Hints card showing probability analysis
+   - ✅ All API calls return 200 (no more 502s)
+   - ✅ Lint passes clean
+
+7. **Delegated feature enhancements** (Task ID 10): Sub-agent implemented 7 major feature groups:
+   - Smart Hint System (collapsible card with probability-based suggestions)
+   - Result Download/Export (JSON or plain text via Blob)
+   - Keyboard Shortcuts Enhancement (Ctrl+Enter to solve, Ctrl+E to export)
+   - Constraint Summary Bar (visual pills for correct/present/absent)
+   - Enhanced Tile Styling (flip animation, glow effect, pulse ring)
+   - Result Card Polish (unique solution banner, 0-result suggestions, zebra striping)
+   - Performance Stats Enhancement (speed gauge, bar chart, expr/ms display)
+
+### Stage Summary:
+- Critical bug fixed: "Solver backend not available" error with confusing JSON parse messages
+- Proxy route now robust: handles non-JSON responses, solver restarts, and network errors gracefully
+- Watchdog now uses 16MB stack to prevent stack overflow
+- Frontend error handling vastly improved: user-friendly messages, progressive retries
+- 7 new feature groups added by sub-agent (Task ID 10)
+- All QA tests pass
+- Lint passes clean
+- Solver running stable (24+ minutes uptime via watchdog)
+
+### Current Project State:
+- **Phase**: Feature-Complete with Robust Error Handling
+- **Overall Status**: Stable and functional
+- All core features working: constraint board, keyboard, solve, results, import/export, history, presets
+- New features: Smart Hints, Result Download, Ctrl+Enter/Ctrl+E shortcuts, Constraint Summary Bar, Enhanced Tile Styling, Result Card Polish, Performance Stats
+- Robust error handling: No more confusing JSON parse errors in UI
+
+### Unresolved Issues / Risks:
+- Rust `busy` flag can get stuck if solver panics (RAII BusyGuard fix coded but not compiled - no Rust toolchain available in sandbox)
+- Solver process dies between bash sessions (sandbox limitation, not a code bug) - watchdog auto-restarts
+- Rayon parallel mode causes deadlock inside spawn_blocking (using sequential mode instead)
+- Stack overflow possible for very long expressions (length > 8) - 16MB stack mitigates but doesn't eliminate
+- Distributed computing endpoints exist but not fully tested end-to-end
+- No WebSocket/real-time progress updates for long-running solves
+- Expression evaluation edge cases may differ from JS `eval()`
+
+### Recommended Next Steps:
+1. Recompile Rust solver with BusyGuard RAII pattern when Rust toolchain is available
+2. Implement WebSocket-based real-time solve progress
+3. Add iterative solver for long expressions (length > 8)
+4. Fix Rayon parallel mode (use std::thread instead of spawn_blocking)
+5. Test distributed computing end-to-end
+6. Add behavioral consistency test suite (compare JS vs Rust solver results)
+7. Add Undo/Redo support for constraint editing

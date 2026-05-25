@@ -36,7 +36,7 @@ function startSolver() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      RUST_MIN_STACK: '4194304', // 4MB stack
+      RUST_MIN_STACK: '16777216', // 16MB stack for deep recursive solver
     },
   });
 

@@ -28,77 +28,104 @@ async function waitForSolver(maxWaitMs: number = SOLVER_STARTUP_TIMEOUT): Promis
   return false;
 }
 
+/**
+ * Safely parse JSON from a response, returning null if the body is not valid JSON.
+ */
+async function safeParseJson(res: Response): Promise<{ data: unknown; parseError: string | null }> {
+  try {
+    const text = await res.text();
+    if (!text || text.trim().length === 0) {
+      return { data: null, parseError: "Empty response body from solver" };
+    }
+    const parsed = JSON.parse(text);
+    return { data: parsed, parseError: null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown JSON parse error";
+    return { data: null, parseError: `Invalid JSON from solver: ${msg}` };
+  }
+}
+
+/**
+ * Try to start the solver binary and wait for it to come up.
+ */
+async function tryStartSolver(): Promise<boolean> {
+  if (solverStarting && Date.now() - solverStartTime < SOLVER_STARTUP_TIMEOUT) {
+    // Another request is already starting the solver, wait for it
+    return waitForSolver(SOLVER_STARTUP_TIMEOUT - (Date.now() - solverStartTime));
+  }
+
+  solverStarting = true;
+  solverStartTime = Date.now();
+  try {
+    const { spawn } = await import('child_process');
+    const { resolve } = await import('path');
+    const binaryPath = resolve(process.cwd(), 'mini-services/sumzle-solver/target/release/sumzle-solver');
+    const proc = spawn(binaryPath, [], {
+      stdio: 'ignore',
+      detached: true,
+      env: {
+        ...process.env,
+        RUST_MIN_STACK: '16777216',
+      },
+    });
+    proc.unref();
+  } catch {
+    // Failed to start solver
+  }
+  // Wait for solver to come up
+  const alive = await waitForSolver();
+  solverStarting = false;
+  return alive;
+}
+
+/**
+ * Make a request to the Rust solver, with automatic retry on failure.
+ */
+async function fetchSolver(pathname: string, search: string, method: string, body?: unknown): Promise<NextResponse> {
+  const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${pathname}${search}`;
+
+  const fetchOptions: RequestInit = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(method === 'POST' ? 120000 : 5000),
+  };
+  if (body !== undefined) {
+    fetchOptions.body = JSON.stringify(body);
+  }
+
+  const res = await fetch(solverUrl, fetchOptions);
+
+  // Try to parse the response as JSON
+  const { data, parseError } = await safeParseJson(res);
+
+  if (parseError) {
+    // The solver returned non-JSON (might be HTML error page, empty body, etc.)
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Solver returned invalid response (HTTP ${res.status}): ${parseError}`,
+        data: { solver_online: false },
+      },
+      { status: res.status >= 400 ? res.status : 502 }
+    );
+  }
+
+  return NextResponse.json(data, { status: res.status });
+}
+
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
-    const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-
-    const res = await fetch(solverUrl, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(5000),
-    });
-
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return await fetchSolver(url.pathname, url.search, "GET");
   } catch (error) {
     // If solver is not running, try to start it
-    if (!solverStarting) {
-      solverStarting = true;
-      solverStartTime = Date.now();
+    const alive = await tryStartSolver();
+    if (alive) {
       try {
-        const { spawn } = await import('child_process');
-        const { resolve } = await import('path');
-        const binaryPath = resolve(process.cwd(), 'mini-services/sumzle-solver/target/release/sumzle-solver');
-        const proc = spawn(binaryPath, [], {
-          stdio: 'ignore',
-          detached: true,
-          env: {
-            ...process.env,
-            RUST_MIN_STACK: '4194304',
-          },
-        });
-        proc.unref();
-      } catch (e) {
-        // Failed to start solver
-      }
-      // Wait for solver to come up
-      const alive = await waitForSolver();
-      solverStarting = false;
-
-      if (alive) {
-        // Retry the request
-        try {
-          const url = new URL(request.url);
-          const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-          const res = await fetch(solverUrl, {
-            method: "GET",
-            headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(5000),
-          });
-          const data = await res.json();
-          return NextResponse.json(data, { status: res.status });
-        } catch {
-          // Still failed after restart
-        }
-      }
-    } else if (Date.now() - solverStartTime < SOLVER_STARTUP_TIMEOUT) {
-      // Another request is already starting the solver, wait for it
-      const alive = await waitForSolver(SOLVER_STARTUP_TIMEOUT - (Date.now() - solverStartTime));
-      if (alive) {
-        try {
-          const url = new URL(request.url);
-          const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-          const res = await fetch(solverUrl, {
-            method: "GET",
-            headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(5000),
-          });
-          const data = await res.json();
-          return NextResponse.json(data, { status: res.status });
-        } catch {
-          // Failed
-        }
+        const url = new URL(request.url);
+        return await fetchSolver(url.pathname, url.search, "GET");
+      } catch {
+        // Still failed after restart
       }
     }
 
@@ -106,7 +133,7 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         error: `Solver backend not available: ${error instanceof Error ? error.message : "Unknown error"}`,
-        data: { solver_online: false }
+        data: { solver_online: false },
       },
       { status: 502 }
     );
@@ -114,88 +141,51 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Invalid JSON in request body",
+        data: null,
+      },
+      { status: 400 }
+    );
+  }
+
   try {
     const url = new URL(request.url);
-    const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-
-    const body = await request.json();
-
-    const res = await fetch(solverUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000), // 2 min timeout for solves
-    });
-
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return await fetchSolver(url.pathname, url.search, "POST", body);
   } catch (error) {
     // If solver is not running, try to start it
-    if (!solverStarting) {
-      solverStarting = true;
-      solverStartTime = Date.now();
+    const alive = await tryStartSolver();
+    if (alive) {
       try {
-        const { spawn } = await import('child_process');
-        const { resolve } = await import('path');
-        const binaryPath = resolve(process.cwd(), 'mini-services/sumzle-solver/target/release/sumzle-solver');
-        const proc = spawn(binaryPath, [], {
-          stdio: 'ignore',
-          detached: true,
-          env: {
-            ...process.env,
-            RUST_MIN_STACK: '4194304',
-          },
-        });
-        proc.unref();
-      } catch (e) {
-        // Failed to start solver
+        const url = new URL(request.url);
+        return await fetchSolver(url.pathname, url.search, "POST", body);
+      } catch {
+        // Still failed after restart
       }
-      // Wait for solver to come up
-      const alive = await waitForSolver();
-      solverStarting = false;
+    }
 
-      if (alive) {
-        // Retry the request
-        try {
-          const url = new URL(request.url);
-          const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-          const res = await fetch(solverUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),  // Note: body was already parsed
-            signal: AbortSignal.timeout(120000),
-          });
-          const data = await res.json();
-          return NextResponse.json(data, { status: res.status });
-        } catch {
-          // Still failed after restart
-        }
-      }
-    } else if (Date.now() - solverStartTime < SOLVER_STARTUP_TIMEOUT) {
-      const alive = await waitForSolver(SOLVER_STARTUP_TIMEOUT - (Date.now() - solverStartTime));
-      if (alive) {
-        try {
-          const url = new URL(request.url);
-          const solverUrl = `http://127.0.0.1:${SOLVER_PORT}${url.pathname}${url.search}`;
-          const res = await fetch(solverUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(120000),
-          });
-          const data = await res.json();
-          return NextResponse.json(data, { status: res.status });
-        } catch {
-          // Failed
-        }
-      }
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    // Provide a user-friendly error message
+    let friendlyMsg = "Solver backend not available";
+    if (errorMsg.includes("ECONNREFUSED")) {
+      friendlyMsg = "Solver is starting up, please try again in a few seconds";
+    } else if (errorMsg.includes("fetch failed")) {
+      friendlyMsg = "Solver connection failed. It may be restarting";
+    } else if (errorMsg.includes("abort")) {
+      friendlyMsg = "Solver request timed out. The puzzle may be too complex";
     }
 
     return NextResponse.json(
       {
         success: false,
-        error: `Solver backend not available: ${error instanceof Error ? error.message : "Unknown error"}`,
-        data: { solver_online: false }
+        error: friendlyMsg,
+        data: { solver_online: false },
       },
       { status: 502 }
     );
