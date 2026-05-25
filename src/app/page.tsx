@@ -9,13 +9,16 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Sun, Moon, Zap, Play, Plus, Trash2, Upload, Server, Cpu,
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
   Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
-  Undo2, Redo2, ArrowUp
+  Undo2, Redo2, ArrowUp, ArrowDown, GripVertical, Share2, ExternalLink, Eye,
+  Volume2, VolumeX, CopyPlus, Wand2
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -78,6 +81,15 @@ interface ConstraintConflict {
   message: string
 }
 
+interface PersistedStats {
+  totalSolves: number
+  avgTimeMs: number
+  fastestTimeMs: number
+  mostCommonLength: number
+  successRate: number
+  lengthCounts: Record<number, number>
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const KEYBOARD_CHARS = [
@@ -116,9 +128,12 @@ const MAX_ROWS = 10
 const MIN_LENGTH = 3
 const MAX_LENGTH = 15
 const DEFAULT_LENGTH = 6
-const MAX_RESULTS_DEFAULT = 500
+const MAX_RESULTS_DEFAULT = 0  // 0 = no limit, fetch ALL results from solver
+const MAX_DISPLAY_RESULTS = 500  // Max results to render in the DOM for performance
+const MAX_RESULTS_SAFE_CAP = 100000  // Safety cap to prevent browser OOM on initial solve
 const MAX_SOLVE_HISTORY = 10
 const MAX_UNDO_HISTORY = 50
+const APP_VERSION = '2.1.0'
 
 // Valid characters for physical keyboard mapping
 const VALID_CHARS_SET = new Set([
@@ -241,6 +256,57 @@ export default function Home() {
   // Result badge flash
   const [resultBadgeFlash, setResultBadgeFlash] = useState(false)
 
+  // Load more results display limit
+  const [displayLimit, setDisplayLimit] = useState(MAX_DISPLAY_RESULTS)
+
+  // Download all (unlimited) progress
+  const [downloadingAll, setDownloadingAll] = useState(false)
+  const [downloadAllProgress, setDownloadAllProgress] = useState('')
+
+  // Drag & Drop row reordering
+  const [dragOverRow, setDragOverRow] = useState<number | null>(null)
+  const [dragSourceRow, setDragSourceRow] = useState<number | null>(null)
+
+  // Result expression visualizer
+  const [selectedResultExpr, setSelectedResultExpr] = useState<string | null>(null)
+
+  // Share puzzle state
+  const [shareCopied, setShareCopied] = useState(false)
+
+  // Solve mode (Feature 5)
+  const [solveMode, setSolveMode] = useState<'parallel' | 'sequential'>('parallel')
+
+  // Keyboard sound feedback (Feature 6)
+  const [soundEnabled, setSoundEnabled] = useState(false)
+
+  // Auto-solve on constraint complete (Feature 8)
+  const [autoSolve, setAutoSolve] = useState(false)
+
+  // Persisted stats (Feature 3)
+  const [persistedStats, setPersistedStats] = useState<PersistedStats>({
+    totalSolves: 0,
+    avgTimeMs: 0,
+    fastestTimeMs: Infinity,
+    mostCommonLength: 0,
+    successRate: 0,
+    lengthCounts: {},
+  })
+
+  // Empty state tip index (Feature 11)
+  const [emptyTipIndex, setEmptyTipIndex] = useState(0)
+
+  // Confetti state (Feature 4)
+  const [showConfetti, setShowConfetti] = useState(false)
+
+  // Page loaded for fade-in (Feature 12)
+  const [pageLoaded, setPageLoaded] = useState(false)
+
+  // Keyboard active key for ripple (Feature 10)
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+
+  // Mobile keyboard auto-open
+  const mobileInputRef = useRef<HTMLInputElement>(null)
+
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
   const boardRef = useRef<HTMLDivElement>(null)
@@ -279,6 +345,36 @@ export default function Home() {
     setRows(deepCloneRows(historyStack[newIndex]))
   }, [historyIndex, historyStack])
 
+  // ─── Load puzzle from URL ──────────────────────────────────────────────────
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const puzzleParam = params.get('p')
+    if (puzzleParam) {
+      try {
+        const decoded = JSON.parse(atob(puzzleParam))
+        if (decoded.length && typeof decoded.length === 'number') {
+          setExpressionLength(decoded.length)
+        }
+        if (decoded.rows && Array.isArray(decoded.rows)) {
+          const importedRows = (decoded.rows as { char: string; state: string }[][]).map((row) =>
+            row.map((tile) => ({
+              char: API_TO_DISPLAY[tile.char] || tile.char,
+              state: ((tile.state === 'empty' && tile.char !== '') ? 'absent' :
+                     (tile.state || 'empty')) as TileState,
+            }))
+          )
+          setRows(importedRows)
+          if (importedRows) pushHistory(importedRows)
+          // Clean URL
+          window.history.replaceState({}, '', window.location.pathname)
+        }
+      } catch {
+        // Invalid puzzle param, ignore
+      }
+    }
+  }, [])
+
   // ─── Dark mode effect ──────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -298,6 +394,14 @@ export default function Home() {
     }, 100)
     return () => clearInterval(interval)
   }, [solving])
+
+  // ─── Mobile keyboard auto-open ────────────────────────────────────────────
+
+  useEffect(() => {
+    if (selectedCell && mobileInputRef.current) {
+      mobileInputRef.current.focus({ preventScroll: true })
+    }
+  }, [selectedCell])
 
   // ─── Celebration effect ────────────────────────────────────────────────────
 
@@ -334,6 +438,169 @@ export default function Home() {
     window.addEventListener('scroll', handleScroll, { passive: true })
     return () => window.removeEventListener('scroll', handleScroll)
   }, [])
+
+  // ─── Load persisted stats from localStorage ────────────────────────────────
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('sumzle-stats')
+      if (stored) {
+        const parsed = JSON.parse(stored) as PersistedStats
+        setPersistedStats(parsed)
+      }
+    } catch { /* private browsing mode */ }
+  }, [])
+
+  // ─── Load sound preference from localStorage ───────────────────────────────
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('sumzle-sound')
+      if (stored === 'true') setSoundEnabled(true)
+    } catch { /* private browsing mode */ }
+  }, [])
+
+  // ─── Page load fade-in ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPageLoaded(true), 50)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // ─── Empty tips rotation ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (solveResult || solving) return
+    const timer = setInterval(() => {
+      setEmptyTipIndex(prev => (prev + 1) % 3)
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [solveResult, solving])
+
+  // ─── Confetti trigger ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (solveResult && solveResult.results.length === 1) {
+      setShowConfetti(true)
+      const timer = setTimeout(() => setShowConfetti(false), 4000)
+      return () => clearTimeout(timer)
+    }
+    setShowConfetti(false)
+  }, [solveResult])
+
+  // ─── Update persisted stats when solve completes ───────────────────────────
+
+  useEffect(() => {
+    if (solveResult && !solving) {
+      setPersistedStats(prev => {
+        const newTotal = prev.totalSolves + 1
+        const newAvgTime = prev.totalSolves === 0
+          ? solveResult.elapsed_ms
+          : (prev.avgTimeMs * prev.totalSolves + solveResult.elapsed_ms) / newTotal
+        const newFastest = Math.min(prev.fastestTimeMs, solveResult.elapsed_ms)
+        const newLengthCounts = { ...prev.lengthCounts }
+        newLengthCounts[expressionLength] = (newLengthCounts[expressionLength] || 0) + 1
+        const mostCommon = Object.entries(newLengthCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
+        const successRate = prev.totalSolves === 0
+          ? (solveResult.results.length > 0 ? 100 : 0)
+          : ((prev.successRate * prev.totalSolves / 100) + (solveResult.results.length > 0 ? 1 : 0)) / newTotal * 100
+
+        const updated: PersistedStats = {
+          totalSolves: newTotal,
+          avgTimeMs: newAvgTime,
+          fastestTimeMs: newFastest,
+          mostCommonLength: parseInt(mostCommon || '0'),
+          successRate,
+          lengthCounts: newLengthCounts,
+        }
+        try { localStorage.setItem('sumzle-stats', JSON.stringify(updated)) } catch { /* */ }
+        return updated
+      })
+    }
+  }, [solveResult, solving, expressionLength])
+
+  // ─── Keyboard sound feedback (Feature 6) ──────────────────────────────────
+
+  const playKeySound = useCallback(() => {
+    if (!soundEnabled) return
+    try {
+      const ctx = new AudioContext()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.type = 'sine'
+      osc.frequency.value = 800 + Math.random() * 200
+      gain.gain.value = 0.03
+      osc.start()
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05)
+      osc.stop(ctx.currentTime + 0.05)
+    } catch { /* audio not available */ }
+  }, [soundEnabled])
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled(prev => {
+      const next = !prev
+      try { localStorage.setItem('sumzle-sound', String(next)) } catch { /* */ }
+      return next
+    })
+  }, [])
+
+  // ─── Auto-solve on constraint complete (Feature 8) ─────────────────────────
+
+  const autoSolveTrigger = useMemo(() => {
+    if (!autoSolve || solving) return false
+    return rows.some(row => {
+      const allFilled = row.every(t => t.char !== '')
+      const hasNonEmptyState = row.some(t => t.state !== 'empty')
+      return allFilled && hasNonEmptyState
+    })
+  }, [rows, autoSolve, solving])
+
+  // auto-solve useEffect is defined after the solve function to avoid hoisting issues
+
+  // ─── Duplicate row (Feature 2) ─────────────────────────────────────────────
+
+  const duplicateRow = useCallback((index: number) => {
+    setRows(prev => {
+      if (prev.length >= MAX_ROWS) return prev
+      const updated = [...prev]
+      const newRow = prev[index].map(t => ({ ...t }))
+      updated.splice(index + 1, 0, newRow)
+      pushHistory(updated)
+      return updated
+    })
+  }, [pushHistory])
+
+  // ─── Move row up/down (Feature 2) ──────────────────────────────────────────
+
+  const moveRowUp = useCallback((index: number) => {
+    if (index <= 0) return
+    setRows(prev => {
+      const updated = [...prev]
+      ;[updated[index - 1], updated[index]] = [updated[index], updated[index - 1]]
+      pushHistory(updated)
+      return updated
+    })
+    if (selectedCell) {
+      if (selectedCell.row === index) setSelectedCell({ row: index - 1, col: selectedCell.col })
+      else if (selectedCell.row === index - 1) setSelectedCell({ row: index, col: selectedCell.col })
+    }
+  }, [pushHistory, selectedCell])
+
+  const moveRowDown = useCallback((index: number) => {
+    if (index >= rows.length - 1) return
+    setRows(prev => {
+      const updated = [...prev]
+      ;[updated[index], updated[index + 1]] = [updated[index + 1], updated[index]]
+      pushHistory(updated)
+      return updated
+    })
+    if (selectedCell) {
+      if (selectedCell.row === index) setSelectedCell({ row: index + 1, col: selectedCell.col })
+      else if (selectedCell.row === index + 1) setSelectedCell({ row: index, col: selectedCell.col })
+    }
+  }, [pushHistory, selectedCell, rows.length])
 
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
@@ -500,6 +767,12 @@ export default function Home() {
   const handleKeyPress = useCallback((key: string) => {
     if (!selectedCell) return
 
+    playKeySound()
+
+    // Ripple effect for keyboard keys
+    setActiveKey(key)
+    setTimeout(() => setActiveKey(null), 300)
+
     if (key === '\u232b') {
       const { row, col } = selectedCell
       setChar(row, col, '')
@@ -514,7 +787,7 @@ export default function Home() {
     if (col < expressionLength - 1) {
       setSelectedCell({ row, col: col + 1 })
     }
-  }, [selectedCell, expressionLength, setChar])
+  }, [selectedCell, expressionLength, setChar, playKeySound])
 
   // ─── Solve ─────────────────────────────────────────────────────────────────
 
@@ -523,6 +796,7 @@ export default function Home() {
     setSolveError(null)
     setSolveResult(null)
     setResultFilter('')
+    setDisplayLimit(MAX_DISPLAY_RESULTS)
 
     try {
       const apiRows = rows
@@ -532,12 +806,12 @@ export default function Home() {
           state: tile.state === 'absent' ? 'empty' : tile.state,
         })))
 
-      const body = {
+      const body: Record<string, unknown> = {
         length: expressionLength,
         rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
-        mode: 'parallel',
+        mode: solveMode,
         num_threads: health?.parallel_threads || undefined,
-        max_results: MAX_RESULTS_DEFAULT,
+        max_results: MAX_RESULTS_SAFE_CAP,
       }
 
       let data: Record<string, unknown> | null = null
@@ -547,7 +821,8 @@ export default function Home() {
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-          res = await fetch('/api/solve/parallel', {
+          const endpoint = solveMode === 'sequential' ? '/api/solve/local' : '/api/solve/parallel'
+          res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -627,7 +902,7 @@ export default function Home() {
       const result: SolveResult = (data as Record<string, unknown>).data as SolveResult
       setSolveResult(result)
 
-      const maxResultsApplied = result.results.length >= MAX_RESULTS_DEFAULT
+      const maxResultsApplied = result.results.length >= MAX_RESULTS_SAFE_CAP
       const historyEntry: SolveHistoryEntry = {
         id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
         timestamp: Date.now(),
@@ -650,7 +925,15 @@ export default function Home() {
     } finally {
       setSolving(false)
     }
-  }, [rows, expressionLength, health])
+  }, [rows, expressionLength, health, solveMode])
+
+  // ─── Auto-solve effect (defined after solve to avoid hoisting issues) ────────
+
+  useEffect(() => {
+    if (autoSolveTrigger && !solving) {
+      solve()
+    }
+  }, [autoSolveTrigger, solving, solve])
 
   // ─── Reset Solver ────────────────────────────────────────────────────────
 
@@ -680,11 +963,11 @@ export default function Home() {
         setExpressionLength(parsed.length)
       }
       if (parsed.rows && Array.isArray(parsed.rows)) {
-        importedRows = parsed.rows.map((row: { char: string; state: string }[]) =>
-          row.map((tile: { char: string; state: string }) => ({
+        importedRows = (parsed.rows as { char: string; state: string }[][]).map((row) =>
+          row.map((tile) => ({
             char: API_TO_DISPLAY[tile.char] || tile.char,
-            state: (tile.state === 'empty' && tile.char !== '') ? 'absent' :
-                   (tile.state || 'empty') as TileState,
+            state: ((tile.state === 'empty' && tile.char !== '') ? 'absent' :
+                   (tile.state || 'empty')) as TileState,
           }))
         )
         setRows(importedRows)
@@ -850,6 +1133,109 @@ export default function Home() {
   const removeWorker = useCallback((id: string) => {
     setWorkers(prev => prev.filter(w => w.id !== id))
   }, [])
+
+  // ─── Drag & Drop row reordering ────────────────────────────────────────────
+
+  const handleDragStart = useCallback((rowIdx: number) => {
+    setDragSourceRow(rowIdx)
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, rowIdx: number) => {
+    e.preventDefault()
+    setDragOverRow(rowIdx)
+  }, [])
+
+  const handleDragEnd = useCallback(() => {
+    if (dragSourceRow !== null && dragOverRow !== null && dragSourceRow !== dragOverRow) {
+      setRows(prev => {
+        const updated = [...prev]
+        const [moved] = updated.splice(dragSourceRow, 1)
+        updated.splice(dragOverRow, 0, moved)
+        pushHistory(updated)
+        return updated
+      })
+      // Update selected cell if it was in the moved row
+      if (selectedCell) {
+        if (selectedCell.row === dragSourceRow) {
+          setSelectedCell({ row: dragOverRow, col: selectedCell.col })
+        } else {
+          // Adjust other rows' indices
+          const newRowIndex = selectedCell.row
+          if (dragSourceRow < selectedCell.row && dragOverRow >= selectedCell.row) {
+            setSelectedCell({ row: newRowIndex - 1, col: selectedCell.col })
+          } else if (dragSourceRow > selectedCell.row && dragOverRow <= selectedCell.row) {
+            setSelectedCell({ row: newRowIndex + 1, col: selectedCell.col })
+          }
+        }
+      }
+    }
+    setDragSourceRow(null)
+    setDragOverRow(null)
+  }, [dragSourceRow, dragOverRow, pushHistory, selectedCell])
+
+  // ─── Share Puzzle via URL ──────────────────────────────────────────────────
+
+  const sharePuzzle = useCallback(async () => {
+    const apiRows = rows.map(row =>
+      row.map(tile => ({
+        char: DISPLAY_TO_API[tile.char] || tile.char,
+        state: tile.state === 'absent' ? 'empty' : tile.state,
+      }))
+    )
+    const puzzleState = { length: expressionLength, rows: apiRows }
+    const encoded = btoa(JSON.stringify(puzzleState))
+    const url = `${window.location.origin}${window.location.pathname}?p=${encoded}`
+    await navigator.clipboard.writeText(url)
+    setShareCopied(true)
+    setTimeout(() => setShareCopied(false), 2000)
+  }, [rows, expressionLength])
+
+  // ─── Result Count Estimation ───────────────────────────────────────────────
+
+  const estimatedResultCount = useMemo((): string | null => {
+    if (solving) return null
+    const hasAnyConstraints = rows.some(row => row.some(t => t.char !== ''))
+    if (!hasAnyConstraints) return null
+
+    const totalTiles = rows.reduce((acc, row) => acc + row.filter(t => t.char !== '').length, 0)
+    const correctCount = rows.reduce((acc, row) => acc + row.filter(t => t.state === 'correct').length, 0)
+    const presentCount = rows.reduce((acc, row) => acc + row.filter(t => t.state === 'present').length, 0)
+    const density = (correctCount * 3 + presentCount * 1) / Math.max(totalTiles, 1)
+
+    if (density >= 2) return '~1-10'
+    if (density >= 1) return '~10-100'
+    if (density >= 0.5) return '~100-1K'
+    if (density >= 0.25) return '~1K-10K'
+    if (density >= 0.1) return '~10K-100K'
+    return '~100K+'
+  }, [rows, solving])
+
+  // ─── Result Expression Visualizer ──────────────────────────────────────────
+
+  const visualizeExpression = useMemo(() => {
+    if (!selectedResultExpr) return null
+
+    const expr = selectedResultExpr
+    // Find the separator (= or >)
+    const eqIdx = expr.indexOf('=')
+    const gtIdx = expr.indexOf('>')
+    const sepIdx = eqIdx >= 0 ? eqIdx : gtIdx
+    const separator = eqIdx >= 0 ? '=' : '>'
+
+    if (sepIdx < 0) {
+      // No separator, show as single group
+      return { leftChars: expr.split(''), rightChars: [], separator: '' }
+    }
+
+    const left = expr.substring(0, sepIdx)
+    const right = expr.substring(sepIdx + 1)
+
+    return {
+      leftChars: left.split(''),
+      rightChars: right.split(''),
+      separator,
+    }
+  }, [selectedResultExpr])
 
   // ─── Clear all ─────────────────────────────────────────────────────────────
 
@@ -1081,7 +1467,7 @@ export default function Home() {
 
   // ─── Download handlers ─────────────────────────────────────────────────────
 
-  const handleDownload = useCallback((format: 'json' | 'txt') => {
+  const handleDownload = useCallback((format: 'json' | 'txt' | 'csv') => {
     if (!solveResult) return
 
     let content: string
@@ -1092,6 +1478,14 @@ export default function Home() {
       content = JSON.stringify(solveResult, null, 2)
       filename = `sumzle-results-${Date.now()}.json`
       mimeType = 'application/json'
+    } else if (format === 'csv') {
+      const header = '#,Expression,Type,Length'
+      const rows = solveResult.results.map((expr, idx) =>
+        `${idx + 1},"${formatExpression(expr)}",${getExpressionType(expr)},${expr.length}`
+      )
+      content = [header, ...rows].join('\n')
+      filename = `sumzle-results-${Date.now()}.csv`
+      mimeType = 'text/csv'
     } else {
       content = solveResult.results.map(formatExpression).join('\n')
       filename = `sumzle-results-${Date.now()}.txt`
@@ -1110,6 +1504,100 @@ export default function Home() {
     setShowDownloadMenu(false)
   }, [solveResult])
 
+  // ─── Download All (Unlimited) ─────────────────────────────────────────────────
+
+  const handleDownloadAllUnlimited = useCallback(async (format: 'txt' | 'csv' | 'json') => {
+    if (!solveResult) return
+    setDownloadingAll(true)
+    setDownloadAllProgress('Re-solving without limit...')
+
+    try {
+      const apiRows = rows
+        .filter(row => row.some(t => t.char !== ''))
+        .map(row => row.map(tile => ({
+          char: DISPLAY_TO_API[tile.char] || tile.char,
+          state: tile.state === 'absent' ? 'empty' : tile.state,
+        })))
+
+      const body = {
+        length: expressionLength,
+        rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
+        mode: 'parallel',
+        num_threads: health?.parallel_threads || undefined,
+        // No max_results = unlimited
+      }
+
+      setDownloadAllProgress('Calculating all results (this may take a while)...')
+
+      const res = await fetch('/api/solve/parallel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      const text = await res.text()
+      let data: Record<string, unknown>
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error('Failed to parse solver response')
+      }
+
+      if (!res.ok || !data.success) {
+        throw new Error((data.error as string) || 'Solve failed')
+      }
+
+      const result: SolveResult = data.data as SolveResult
+      setDownloadAllProgress(`Processing ${result.results.length.toLocaleString()} results for download...`)
+
+      let content: string
+      let filename: string
+      let mimeType: string
+
+      if (format === 'json') {
+        content = JSON.stringify(result, null, 2)
+        filename = `sumzle-all-results-${Date.now()}.json`
+        mimeType = 'application/json'
+      } else if (format === 'csv') {
+        const header = '#,Expression,Type,Length'
+        const csvRows = result.results.map((expr, idx) =>
+          `${idx + 1},"${formatExpression(expr)}",${getExpressionType(expr)},${expr.length}`
+        )
+        content = [header, ...csvRows].join('\n')
+        filename = `sumzle-all-results-${Date.now()}.csv`
+        mimeType = 'text/csv'
+      } else {
+        content = result.results.map(formatExpression).join('\n')
+        filename = `sumzle-all-results-${Date.now()}.txt`
+        mimeType = 'text/plain'
+      }
+
+      const blob = new Blob([content], { type: mimeType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      setDownloadAllProgress(`Downloaded ${result.results.length.toLocaleString()} results!`)
+
+      // Update solveResult with full results if they're more than current
+      if (result.results.length > solveResult.results.length) {
+        setSolveResult(result)
+      }
+    } catch (err) {
+      setSolveError(`Download all failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setTimeout(() => {
+        setDownloadingAll(false)
+        setDownloadAllProgress('')
+      }, 2000)
+    }
+  }, [solveResult, rows, expressionLength, health])
+
   // ─── Recent solve speeds for bar chart ─────────────────────────────────────
 
   const recentSpeeds = useMemo(() => {
@@ -1124,7 +1612,7 @@ export default function Home() {
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300 dark:[background-image:radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.03),transparent_75%)]">
+    <div className={`min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300 dark:[background-image:radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.03),transparent_75%)] page-fade-in ${pageLoaded ? 'page-loaded' : ''}`}>
       <style>{`
         @keyframes shimmer {
           0% { background-position: 200% 0; }
@@ -1200,7 +1688,109 @@ export default function Home() {
         .key-absent {
           opacity: 0.5;
         }
+        /* Animated progress bar shimmer */
+        @keyframes progressShimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+        .progress-shimmer {
+          position: relative;
+          overflow: hidden;
+        }
+        .progress-shimmer::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background: linear-gradient(
+            90deg,
+            transparent,
+            rgba(255,255,255,0.3),
+            transparent
+          );
+          animation: progressShimmer 1.5s ease-in-out infinite;
+        }
+        /* Drag and drop styles */
+        .drag-over-top {
+          border-top: 2px solid rgb(16, 185, 129) !important;
+        }
+        .drag-over-bottom {
+          border-bottom: 2px solid rgb(16, 185, 129) !important;
+        }
+        .dragging {
+          opacity: 0.5;
+        }
+        /* Tile press effect */
+        .tile-press:active {
+          transform: scale(0.92);
+        }
+        /* Confetti animation (Feature 4) */
+        @keyframes confettiFall {
+          0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(200px) rotate(720deg); opacity: 0; }
+        }
+        .confetti-particle {
+          position: absolute;
+          animation: confettiFall 2.5s ease-out forwards;
+          pointer-events: none;
+        }
+        /* Keyboard ripple effect (Feature 10) */
+        @keyframes keyRipple {
+          0% { transform: scale(0); opacity: 0.5; }
+          100% { transform: scale(2.5); opacity: 0; }
+        }
+        .key-ripple::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          background: rgba(16, 185, 129, 0.3);
+          animation: keyRipple 0.3s ease-out;
+          pointer-events: none;
+        }
+        /* Tile hover preview (Feature 9) */
+        .tile-hover-preview:hover .tile-preview-indicator {
+          opacity: 1;
+        }
+        /* Page fade-in (Feature 12) */
+        .page-fade-in {
+          opacity: 0;
+          transition: opacity 300ms ease-out;
+        }
+        .page-fade-in.page-loaded {
+          opacity: 1;
+        }
+        /* Pulsing search animation for empty state (Feature 11) */
+        @keyframes pulseSearch {
+          0%, 100% { transform: scale(1); opacity: 0.5; }
+          50% { transform: scale(1.1); opacity: 0.8; }
+        }
+        .pulse-search {
+          animation: pulseSearch 2s ease-in-out infinite;
+        }
+        /* Skip to content link (Feature 7) */
+        .skip-to-content {
+          position: absolute;
+          top: -100px;
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 9999;
+          padding: 8px 16px;
+          background: rgb(16, 185, 129);
+          color: white;
+          border-radius: 0 0 8px 8px;
+          font-size: 14px;
+          font-weight: 600;
+          transition: top 0.2s;
+        }
+        .skip-to-content:focus {
+          top: 0;
+        }
       `}</style>
+      {/* Skip to content link (Feature 7) */}
+      <a href="#main-content" className="skip-to-content">Skip to content</a>
       {/* ─── Header ──────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -1255,7 +1845,8 @@ export default function Home() {
               size="icon"
               onClick={() => setDarkMode(!darkMode)}
               className="rounded-full focus-visible:ring-2 focus-visible:ring-emerald-500"
-              aria-label="Toggle theme"
+              aria-label="Toggle dark/light theme"
+              title="Toggle theme"
             >
               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
@@ -1264,7 +1855,7 @@ export default function Home() {
       </header>
 
       {/* ─── Main Content ────────────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+      <main id="main-content" className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
           {/* ─── LEFT PANEL: Input ──────────────────────────────────────────── */}
@@ -1333,21 +1924,43 @@ export default function Home() {
                     </Button>
                   </div>
                 </div>
+                {/* Quick-Select Length Buttons (Feature 1) */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-zinc-400 mr-1">Quick:</span>
+                  {[3, 5, 6, 7, 8].map(len => (
+                    <button
+                      key={len}
+                      className={`h-7 min-w-[28px] px-2 rounded-full text-xs font-bold transition-all duration-150 focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                        expressionLength === len
+                          ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/30 hover:text-emerald-600 dark:hover:text-emerald-400'
+                      }`}
+                      onClick={() => handleLengthChange(String(len))}
+                      aria-label={`Set expression length to ${len}`}
+                    >
+                      {len}
+                    </button>
+                  ))}
+                </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Add a new constraint row">
                     <Plus className="w-3.5 h-3.5 mr-1" /> Add Row
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)} disabled={solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={() => setShowImport(!showImport)} disabled={solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Import puzzle from JSON">
                     <Upload className="w-3.5 h-3.5 mr-1" /> Import
                   </Button>
-                  <Button variant="outline" size="sm" onClick={copyState} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={copyState} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Copy game state as JSON to clipboard">
                     {copied ? <Check className="w-3.5 h-3.5 mr-1" /> : <Copy className="w-3.5 h-3.5 mr-1" />}
                     {copied ? 'Copied!' : 'Export'}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)} className="focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={sharePuzzle} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Share puzzle via URL link">
+                    {shareCopied ? <Check className="w-3.5 h-3.5 mr-1" /> : <Share2 className="w-3.5 h-3.5 mr-1" />}
+                    {shareCopied ? 'Link Copied!' : 'Share'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowDistributed(!showDistributed)} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Manage distributed worker nodes">
                     <Network className="w-3.5 h-3.5 mr-1" /> Workers
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setShowHistory(!showHistory)} className="relative focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={() => setShowHistory(!showHistory)} className="relative focus-visible:ring-2 focus-visible:ring-emerald-500" title="View recent solve history">
                     <History className="w-3.5 h-3.5 mr-1" /> History
                     {solveHistory.length > 0 && (
                       <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] flex items-center justify-center font-bold">
@@ -1355,7 +1968,7 @@ export default function Home() {
                       </span>
                     )}
                   </Button>
-                  <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500">
+                  <Button variant="outline" size="sm" onClick={clearAll} disabled={solving} className="text-zinc-500 focus-visible:ring-2 focus-visible:ring-emerald-500" title="Clear all constraints and reset">
                     <RefreshCw className="w-3.5 h-3.5 mr-1" /> Clear
                   </Button>
                 </div>
@@ -1366,7 +1979,7 @@ export default function Home() {
             <div className="flex flex-wrap gap-1.5">
               <span className="text-xs text-zinc-500 dark:text-zinc-400 self-center mr-1">Presets:</span>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
+                const newRows: Tile[][] = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
                 setExpressionLength(5)
                 updateRowLengths(5)
                 setRows(newRows)
@@ -1377,7 +1990,7 @@ export default function Home() {
                 1+1=2
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]]
+                const newRows: Tile[][] = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
                 setExpressionLength(6)
                 updateRowLengths(6)
                 setRows(newRows)
@@ -1388,7 +2001,7 @@ export default function Home() {
                 Starter Len 6
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [
+                const newRows: Tile[][] = [
                   [{char:'1',state:'correct'},{char:'2',state:'present'},{char:'+',state:'correct'},{char:'3',state:'absent'},{char:'=',state:'correct'},{char:'5',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'}],
                   [{char:'2',state:'present'},{char:'\u00d7',state:'correct'},{char:'3',state:'correct'},{char:'=',state:'correct'},{char:'6',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'},{char:'',state:'empty'}],
                 ]
@@ -1402,11 +2015,11 @@ export default function Home() {
                 Hard Mode
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [createEmptyRow(6)]
+                const clearedRows: Tile[][] = [createEmptyRow(6)]
                 setExpressionLength(6)
                 updateRowLengths(6)
-                setRows(newRows)
-                pushHistory(newRows)
+                setRows(clearedRows)
+                pushHistory(clearedRows)
                 setSelectedCell(null)
                 setSolveResult(null)
                 setSolveError(null)
@@ -1612,10 +2225,33 @@ export default function Home() {
                 </div>
 
                 {/* Rows */}
-                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1" ref={boardRef}>
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1" ref={boardRef} role="grid" aria-label="Constraint board">
                   {rows.map((row, rowIdx) => (
-                    <div key={rowIdx} className="flex items-center gap-1.5">
-                      <span className="text-xs text-zinc-400 w-4 text-right shrink-0">{rowIdx + 1}</span>
+                    <div
+                      key={rowIdx}
+                      className={`flex items-center gap-1.5 transition-all duration-150 ${
+                        dragSourceRow === rowIdx ? 'dragging' : ''
+                      } ${
+                        dragOverRow !== null && dragOverRow !== dragSourceRow
+                          ? dragOverRow === rowIdx && dragSourceRow !== null && dragSourceRow < rowIdx ? 'drag-over-bottom'
+                            : dragOverRow === rowIdx && dragSourceRow !== null && dragSourceRow > rowIdx ? 'drag-over-top'
+                            : ''
+                          : ''
+                      }`}
+                      draggable
+                      onDragStart={() => handleDragStart(rowIdx)}
+                      onDragOver={(e) => handleDragOver(e, rowIdx)}
+                      onDragEnd={handleDragEnd}
+                    >
+                      {/* Drag handle */}
+                      <button
+                        className="cursor-grab active:cursor-grabbing p-0.5 text-zinc-300 hover:text-zinc-500 dark:text-zinc-600 dark:hover:text-zinc-400 shrink-0 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                        title="Drag to reorder row"
+                        aria-label="Drag handle for row ${rowIdx + 1}"
+                      >
+                        <GripVertical className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-xs text-zinc-400 w-4 text-right shrink-0 font-medium">{rowIdx + 1}</span>
                       <div className="flex gap-0.5">
                         {row.map((tile, colIdx) => {
                           const isSelected = selectedCell?.row === rowIdx && selectedCell?.col === colIdx
@@ -1641,15 +2277,28 @@ export default function Home() {
                                 ${isPopping ? 'scale-110' : ''}
                                 ${isFlipping ? 'tile-flip' : ''}
                                 ${isRecommended ? 'tile-glow' : ''}
-                                hover:scale-105 active:scale-95
+                                hover:scale-105 active:scale-95 tile-press tile-hover-preview
                               `}
                               style={{ perspective: '400px', transformStyle: 'preserve-3d' }}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
                               onContextMenu={(e) => handleTileContextMenu(e, rowIdx, colIdx)}
                               title={`Position ${colIdx + 1}`}
+                              role="gridcell"
+                              aria-roledescription="puzzle tile"
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
+                              {/* Tile hover preview indicator (Feature 9) */}
+                              {tile.char && (
+                                <span className="tile-preview-indicator absolute bottom-0.5 right-0.5 opacity-0 transition-opacity duration-150 pointer-events-none" aria-hidden="true">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${
+                                    tile.state === 'correct' ? 'bg-amber-400' :
+                                    tile.state === 'present' ? 'bg-zinc-400' :
+                                    tile.state === 'absent' ? 'bg-emerald-500' :
+                                    ''
+                                  }`} />
+                                </span>
+                              )}
                               {/* Absent tile watermark */}
                               {isAbsent && (
                                 <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold opacity-[0.08] pointer-events-none select-none" aria-hidden="true">
@@ -1672,6 +2321,36 @@ export default function Home() {
                           title="Clear row"
                         >
                           <RefreshCw className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => duplicateRow(rowIdx)}
+                          disabled={rows.length >= MAX_ROWS}
+                          title="Duplicate row"
+                        >
+                          <CopyPlus className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => moveRowUp(rowIdx)}
+                          disabled={rowIdx === 0}
+                          title="Move row up"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => moveRowDown(rowIdx)}
+                          disabled={rowIdx === rows.length - 1}
+                          title="Move row down"
+                        >
+                          <ArrowDown className="w-3 h-3" />
                         </Button>
                         {rows.length > 1 && (
                           <Button
@@ -1763,15 +2442,28 @@ export default function Home() {
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
-                    onClick={() => setShowShortcuts(!showShortcuts)}
-                    title="Keyboard shortcuts"
-                  >
-                    <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
-                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    {/* Sound toggle (Feature 6) */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={toggleSound}
+                      title={soundEnabled ? 'Mute key sounds' : 'Enable key sounds'}
+                      aria-label={soundEnabled ? 'Mute key sounds' : 'Enable key sounds'}
+                    >
+                      {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-500" /> : <VolumeX className="w-3.5 h-3.5 text-zinc-400" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={() => setShowShortcuts(!showShortcuts)}
+                      title="Keyboard shortcuts"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
+                    </Button>
+                  </div>
                 </div>
                 {showShortcuts && (
                   <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150 space-y-1">
@@ -1781,7 +2473,7 @@ export default function Home() {
                 )}
                 <div className="space-y-1.5">
                   {KEYBOARD_CHARS.map((line, lineIdx) => (
-                    <div key={lineIdx} className="flex justify-center gap-1">
+                    <div key={lineIdx} className="flex justify-center gap-1 p-1.5 rounded-lg bg-zinc-50/50 dark:bg-zinc-800/30 border border-zinc-100 dark:border-zinc-800/50">
                       {line.map((key) => {
                         const keyState = keyboardKeyStates.get(key)
                         const stateClass = keyState === 'correct'
@@ -1798,9 +2490,10 @@ export default function Home() {
                             variant="outline"
                             size="sm"
                             className={`
-                              h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500
+                              h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500 relative overflow-hidden
                               ${key === '\u232b' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
                               ${stateClass}
+                              ${activeKey === key ? 'key-ripple' : ''}
                               ${selectedCell
                                 ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
                                 : 'opacity-50'
@@ -1826,6 +2519,24 @@ export default function Home() {
                     Click a tile on the board to start typing
                   </p>
                 )}
+                {/* Hidden input for mobile keyboard auto-open */}
+                <input
+                  ref={mobileInputRef}
+                  type="text"
+                  inputMode="none"
+                  className="absolute w-0 h-0 opacity-0 overflow-hidden"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onKeyDown={(e) => {
+                    // Forward mobile keyboard input to the handler
+                    const target = e.target as HTMLElement
+                    if (target === mobileInputRef.current && selectedCell) {
+                      // Let the global keydown handler take care of it
+                      e.preventDefault()
+                      e.stopPropagation()
+                    }
+                  }}
+                />
               </CardContent>
             </Card>
 
@@ -1860,9 +2571,43 @@ export default function Home() {
             })()}
 
             {/* Gradient divider before solve button */}
-            <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent" />
+            <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent" />
 
-            {/* Solve Button - with gradient border effect + shortcut badge */}
+            {/* Result Count Estimation */}
+            {estimatedResultCount && !solving && (
+              <div className="flex items-center justify-center gap-1.5 -mb-2">
+                <Hash className="w-3 h-3 text-zinc-400" />
+                <span className="text-xs text-zinc-400">{estimatedResultCount} expected</span>
+              </div>
+            )}
+
+            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">Mode:</span>
+                <Select value={solveMode} onValueChange={(v: string) => setSolveMode(v as 'parallel' | 'sequential')}>
+                  <SelectTrigger className="h-7 text-xs w-[130px]" size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="parallel">Parallel (multi-core)</SelectItem>
+                    <SelectItem value="sequential">Sequential (debug)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">Auto-solve</span>
+                <Switch
+                  checked={autoSolve}
+                  onCheckedChange={setAutoSolve}
+                  aria-label="Auto-solve when constraints complete"
+                  className="data-[state=checked]:bg-emerald-500"
+                />
+                <Wand2 className={`w-3.5 h-3.5 ${autoSolve ? 'text-emerald-500' : 'text-zinc-300 dark:text-zinc-600'}`} />
+              </div>
+            </div>
+
+            {/* Solve Button - with gradient border effect + shortcut badge + mode badge */}
             <div className="relative group lg:static sticky bottom-4 z-40">
               <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
               <Button
@@ -1881,6 +2626,9 @@ export default function Home() {
                     <Play className="w-5 h-5 mr-2" />
                     Solve with Rust Engine
                     <span className="ml-2 text-xs opacity-70 font-normal hidden sm:inline">{'\u2318\u21b5'}</span>
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-emerald-300 text-emerald-600 dark:border-emerald-700 dark:text-emerald-400 hidden sm:inline-flex">
+                      {solveMode === 'parallel' ? 'Multi' : 'Seq'}
+                    </Badge>
                   </>
                 )}
               </Button>
@@ -1902,8 +2650,45 @@ export default function Home() {
           {/* ─── RIGHT PANEL: Results ──────────────────────────────────────── */}
           <div className="space-y-4" ref={resultsRef}>
 
+            {/* Empty State Enhancement (Feature 11) */}
+            {!solveResult && !solving && !solveError && (
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
+                <CardContent className="pt-8 pb-8">
+                  <div className="text-center space-y-4">
+                    {/* Animated illustration */}
+                    <div className="relative inline-flex items-center justify-center">
+                      <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center pulse-search">
+                        <Search className="w-10 h-10 text-emerald-500/60 dark:text-emerald-400/60" />
+                      </div>
+                      <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-amber-100 dark:bg-amber-950/40 flex items-center justify-center">
+                        <span className="text-xs font-bold text-amber-500">?</span>
+                      </div>
+                    </div>
+                    {/* Rotating tips */}
+                    <div className="min-h-[40px] flex items-center justify-center">
+                      {emptyTipIndex === 0 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Enter constraints and hit <strong className="text-emerald-600 dark:text-emerald-400">Solve</strong>!
+                        </p>
+                      )}
+                      {emptyTipIndex === 1 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Try the <strong className="text-emerald-600 dark:text-emerald-400">1+1=2</strong> preset to get started
+                        </p>
+                      )}
+                      {emptyTipIndex === 2 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Use keyboard shortcuts: <kbd className="px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 rounded text-xs font-mono">Ctrl+Enter</kbd> to solve
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Stats Card */}
-            {(solveResult || health) && (
+            {(solveResult || health || persistedStats.totalSolves > 0) && (
               <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -1942,6 +2727,42 @@ export default function Home() {
                       </>
                     )}
                   </div>
+                  {/* Comprehensive Stats Dashboard (Feature 3) */}
+                  {persistedStats.totalSolves > 0 && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Your Stats</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                        <div className="text-center p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50">
+                          <Hash className="w-3 h-3 mx-auto mb-0.5 text-emerald-500" />
+                          <div className="text-sm font-bold text-emerald-700 dark:text-emerald-400">{persistedStats.totalSolves}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Solves</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/50">
+                          <Timer className="w-3 h-3 mx-auto mb-0.5 text-amber-500" />
+                          <div className="text-sm font-bold text-amber-700 dark:text-amber-400">{persistedStats.avgTimeMs < 1000 ? `${persistedStats.avgTimeMs.toFixed(0)}ms` : `${(persistedStats.avgTimeMs / 1000).toFixed(1)}s`}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Avg Time</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-teal-50 dark:bg-teal-950/20 border border-teal-100 dark:border-teal-900/50">
+                          <Sparkles className="w-3 h-3 mx-auto mb-0.5 text-teal-500" />
+                          <div className="text-sm font-bold text-teal-700 dark:text-teal-400">{persistedStats.fastestTimeMs < Infinity ? (persistedStats.fastestTimeMs < 1000 ? `${persistedStats.fastestTimeMs.toFixed(0)}ms` : `${(persistedStats.fastestTimeMs / 1000).toFixed(1)}s`) : '-'}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Fastest</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-cyan-50 dark:bg-cyan-950/20 border border-cyan-100 dark:border-cyan-900/50">
+                          <Target className="w-3 h-3 mx-auto mb-0.5 text-cyan-500" />
+                          <div className="text-sm font-bold text-cyan-700 dark:text-cyan-400">{persistedStats.mostCommonLength || '-'}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Common Len</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/50">
+                          <TrendingUp className="w-3 h-3 mx-auto mb-0.5 text-rose-500" />
+                          <div className="text-sm font-bold text-rose-700 dark:text-rose-400">{persistedStats.successRate.toFixed(0)}%</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Success</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {solveResult && (
                     <>
                       {/* Speed gauge */}
@@ -2032,9 +2853,12 @@ export default function Home() {
                     <RefreshCw className="w-4 h-4 animate-spin text-emerald-500" />
                     <span className="text-sm font-medium">Rust engine solving... {(solveTimerMs / 1000).toFixed(1)}s</span>
                   </div>
-                  <Progress value={undefined} className="h-2" />
+                  {/* Animated shimmer progress bar */}
+                  <div className="h-3 rounded-full bg-gradient-to-r from-emerald-200 via-teal-200 to-cyan-200 dark:from-emerald-900 dark:via-teal-900 dark:to-cyan-900 progress-shimmer" role="progressbar" aria-label="Solve progress" aria-valuetext={`Solving for ${(solveTimerMs / 1000).toFixed(1)} seconds`}>
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 transition-all duration-300" style={{ width: '100%' }} />
+                  </div>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Parallel search across {health?.parallel_threads || 4} threads
+                    {solveMode === 'parallel' ? `Parallel search across ${health?.parallel_threads || 4} threads` : 'Sequential single-core search (debug mode)'}
                   </p>
                 </CardContent>
               </Card>
@@ -2042,7 +2866,28 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
+              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80 relative overflow-hidden">
+                {/* Confetti (Feature 4) */}
+                {showConfetti && solveResult.results.length === 1 && (
+                  <div className="absolute inset-0 pointer-events-none z-10" aria-hidden="true">
+                    {Array.from({ length: 30 }, (_, i) => (
+                      <div
+                        key={i}
+                        className="confetti-particle"
+                        style={{
+                          left: `${Math.random() * 100}%`,
+                          top: '-10px',
+                          animationDelay: `${Math.random() * 1.5}s`,
+                          animationDuration: `${2 + Math.random() * 2}s`,
+                          width: `${4 + Math.random() * 6}px`,
+                          height: `${4 + Math.random() * 6}px`,
+                          borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+                          backgroundColor: ['#10b981', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'][Math.floor(Math.random() * 7)],
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
                 <CardHeader className="pb-3">
                   <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
@@ -2051,20 +2896,53 @@ export default function Home() {
                       variant="secondary"
                       className={`ml-auto relative ${celebrating ? 'animate-bounce' : ''} ${resultBadgeFlash ? 'badge-flash' : ''}`}
                     >
-                      {solveResult.results.length >= MAX_RESULTS_DEFAULT
-                        ? `${MAX_RESULTS_DEFAULT.toLocaleString()}+ found`
-                        : `${solveResult.results.length.toLocaleString()} found`
-                      }
+                      {`${solveResult.results.length.toLocaleString()} found`}
                       {celebrating && (
                         <span className="absolute -top-2 -right-2 text-sm">{'\u2728'}</span>
                       )}
                     </Badge>
                   </div>
-                  {solveResult.results.length >= MAX_RESULTS_DEFAULT && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
-                      <Info className="w-3 h-3" />
-                      Showing {MAX_RESULTS_DEFAULT.toLocaleString()} of ~{solveResult.results.length.toLocaleString()}+ results. Add more constraints to narrow results.
-                    </p>
+                  {solveResult.results.length > MAX_DISPLAY_RESULTS && (
+                    <div className="space-y-2 mt-1">
+                      <div className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <Download className="w-3 h-3" />
+                          {solveResult.results.length.toLocaleString()} solutions available for download
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-[10px] px-2 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => handleDownload('txt')}
+                        >
+                          <Download className="w-2.5 h-2.5 mr-1" /> Download current
+                        </Button>
+                      </div>
+                      {solveResult.results.length >= MAX_RESULTS_SAFE_CAP && (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          <div className="flex-1 text-xs text-amber-700 dark:text-amber-400">
+                            <span className="font-semibold">Results capped at {MAX_RESULTS_SAFE_CAP.toLocaleString()}</span> — more may exist. Use &ldquo;Download All&rdquo; to get every result (may take longer).
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px] px-2 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-950/30 shrink-0 focus-visible:ring-2 focus-visible:ring-amber-500"
+                            onClick={() => handleDownloadAllUnlimited('txt')}
+                            disabled={downloadingAll}
+                          >
+                            {downloadingAll ? <RefreshCw className="w-2.5 h-2.5 mr-1 animate-spin" /> : <Download className="w-2.5 h-2.5 mr-1" />}
+                            Download All (unlimited)
+                          </Button>
+                        </div>
+                      )}
+                      {downloadingAll && downloadAllProgress && (
+                        <div className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                          <RefreshCw className="w-3.5 h-3.5 text-emerald-500 animate-spin shrink-0" />
+                          <span className="text-xs text-emerald-700 dark:text-emerald-400">{downloadAllProgress}</span>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </CardHeader>
                 <CardContent>
@@ -2075,7 +2953,7 @@ export default function Home() {
                       <TabsTrigger value="recommended" className="flex-1">Best</TabsTrigger>
                     </TabsList>
 
-                    <TabsContent value="solutions">
+                    <TabsContent value="solutions" aria-live="polite">
                       {/* Unique solution banner */}
                       {solveResult.results.length === 1 && (
                         <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-200 dark:border-emerald-800 text-center animate-in zoom-in-50 duration-300">
@@ -2148,24 +3026,48 @@ export default function Home() {
                                 size="sm"
                                 className="h-8 px-2 focus-visible:ring-2 focus-visible:ring-emerald-500"
                                 onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                                title="Download results"
+                                title={`Download ${solveResult.results.length.toLocaleString()} results`}
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </Button>
                               {showDownloadMenu && (
-                                <div className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-1 duration-150">
+                                <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-lg z-50 animate-in slide-in-from-top-1 duration-150">
+                                  <div className="px-3 py-1.5 text-[10px] text-zinc-400 border-b border-zinc-100 dark:border-zinc-700 font-medium">
+                                    Download {solveResult.results.length.toLocaleString()} results
+                                  </div>
                                   <button
-                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-t-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('json')}
                                   >
                                     {'\ud83d\udcc4'} JSON (full data)
                                   </button>
                                   <button
-                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('csv')}
+                                  >
+                                    {'\ud83d\udcca'} CSV (spreadsheet)
+                                  </button>
+                                  <button
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('txt')}
                                   >
                                     {'\ud83d\udcdd'} Plain text (list)
                                   </button>
+                                  {solveResult.results.length >= MAX_RESULTS_SAFE_CAP && (
+                                    <>
+                                      <div className="border-t border-zinc-100 dark:border-zinc-700 my-0.5" />
+                                      <div className="px-3 py-1 text-[9px] text-amber-500 font-medium uppercase tracking-wider">
+                                        Unlimited (re-solve)
+                                      </div>
+                                      <button
+                                        className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 dark:hover:bg-amber-950/20 text-amber-700 dark:text-amber-400 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-amber-500"
+                                        onClick={() => { handleDownloadAllUnlimited('txt'); setShowDownloadMenu(false) }}
+                                        disabled={downloadingAll}
+                                      >
+                                        {'\u26a1'} All results (TXT, unlimited)
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -2180,7 +3082,7 @@ export default function Home() {
 
                           {/* Results list with zebra striping */}
                           <div className="max-h-96 overflow-y-auto space-y-0 scrollbar-thin rounded-lg border border-zinc-100 dark:border-zinc-800">
-                            {filteredResults.slice(0, 500).map((expr, idx) => {
+                            {filteredResults.slice(0, displayLimit).map((expr, idx) => {
                               const isRecommended = expr === solveResult.recommended
                               const exprType = getExpressionType(expr)
                               return (
@@ -2196,7 +3098,11 @@ export default function Home() {
                                   `}
                                 >
                                   <span className="text-xs text-zinc-400 w-8 text-right font-mono group-hover:text-zinc-600 dark:group-hover:text-zinc-300">{idx + 1}</span>
-                                  <code className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">{formatExpression(expr)}</code>
+                                  <code
+                                    className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors cursor-pointer"
+                                    onClick={() => setSelectedResultExpr(selectedResultExpr === expr ? null : expr)}
+                                    title="Click to visualize expression"
+                                  >{formatExpression(expr)}</code>
                                   {/* Expression type tag */}
                                   {exprType === 'comparison' && (
                                     <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-teal-300 text-teal-600 dark:border-teal-700 dark:text-teal-400 shrink-0">
@@ -2215,17 +3121,50 @@ export default function Home() {
                                       setCopiedResult(expr)
                                       setTimeout(() => setCopiedResult(null), 1500)
                                     }}
-                                    title="Copy expression"
+                                    title="Copy expression to clipboard"
                                   >
                                     {copiedResult === expr ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-zinc-400" />}
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className={`h-6 w-6 shrink-0 focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                                      selectedResultExpr === expr
+                                        ? 'opacity-100 text-emerald-500'
+                                        : 'opacity-0 group-hover:opacity-100 text-zinc-400'
+                                    } transition-opacity`}
+                                    onClick={() => setSelectedResultExpr(selectedResultExpr === expr ? null : expr)}
+                                    title="Visualize expression breakdown"
+                                  >
+                                    <Eye className="w-3 h-3" />
                                   </Button>
                                 </div>
                               )
                             })}
-                            {filteredResults.length > 500 && (
-                              <p className="text-xs text-zinc-400 text-center py-2">
-                                Showing 500 of {filteredResults.length.toLocaleString()} filtered solutions
-                              </p>
+                            {filteredResults.length > displayLimit && (
+                              <div className="text-center py-3 space-y-2">
+                                <p className="text-xs text-zinc-400">
+                                  Showing {displayLimit.toLocaleString()} of {filteredResults.length.toLocaleString()} solutions
+                                </p>
+                                <div className="flex items-center justify-center gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => setDisplayLimit(prev => Math.min(prev + MAX_DISPLAY_RESULTS, filteredResults.length))}
+                                  >
+                                    Load {Math.min(MAX_DISPLAY_RESULTS, filteredResults.length - displayLimit).toLocaleString()} more
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                                    onClick={() => handleDownload('txt')}
+                                  >
+                                    <Download className="w-3 h-3 mr-1" /> Download all {filteredResults.length.toLocaleString()}
+                                  </Button>
+                                </div>
+                              </div>
                             )}
                             {filteredResults.length === 0 && resultFilter && (
                               <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-6">
@@ -2317,7 +3256,96 @@ export default function Home() {
               </Card>
             )}
 
-            {/* Smart Hints Card */}
+            {/* Result Expression Visualizer */}
+            {selectedResultExpr && visualizeExpression && (
+              <Card className="animate-in slide-in-from-bottom-2 duration-200 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-teal-500" />
+                      Expression Visualizer
+                    </CardTitle>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setSelectedResultExpr(null)}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  <CardDescription>Visual breakdown of the expression</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-center gap-2 flex-wrap p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50">
+                    {/* Left side of expression */}
+                    <div className="flex gap-0.5">
+                      {visualizeExpression.leftChars.map((ch, i) => {
+                        const displayCh = API_TO_DISPLAY[ch] || ch
+                        const isDigit = /\d/.test(ch)
+                        const isOp = ['+', '-', '*', '/', '%', '^', '!', 'A'].includes(ch)
+                        return (
+                          <span
+                            key={`l-${i}`}
+                            className={`w-9 h-9 rounded-lg border-2 flex items-center justify-center font-mono font-bold text-sm transition-all
+                              ${isDigit
+                                ? 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-700'
+                                : isOp
+                                  ? 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-400 dark:border-amber-700'
+                                  : 'bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-600'
+                              }`}
+                          >
+                            {displayCh}
+                          </span>
+                        )
+                      })}
+                    </div>
+                    {/* Separator (= or >) */}
+                    {visualizeExpression.separator && (
+                      <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 px-2">
+                        {visualizeExpression.separator}
+                      </span>
+                    )}
+                    {/* Right side of expression */}
+                    {visualizeExpression.rightChars.length > 0 && (
+                      <div className="flex gap-0.5">
+                        {visualizeExpression.rightChars.map((ch, i) => {
+                          const displayCh = API_TO_DISPLAY[ch] || ch
+                          const isDigit = /\d/.test(ch)
+                          const isOp = ['+', '-', '*', '/', '%', '^', '!', 'A'].includes(ch)
+                          return (
+                            <span
+                              key={`r-${i}`}
+                              className={`w-9 h-9 rounded-lg border-2 flex items-center justify-center font-mono font-bold text-sm transition-all
+                                ${isDigit
+                                  ? 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-700'
+                                  : isOp
+                                    ? 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-400 dark:border-amber-700'
+                                    : 'bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-600'
+                                }`}
+                            >
+                              {displayCh}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  {/* Legend */}
+                  <div className="flex items-center justify-center gap-4 mt-3 text-xs text-zinc-500">
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-emerald-100 dark:bg-emerald-900/40 border border-emerald-300 dark:border-emerald-700" />
+                      Digits
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-amber-100 dark:bg-amber-900/40 border border-amber-300 dark:border-amber-700" />
+                      Operators
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600" />
+                      Symbols
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Smart Hints Card - continued */}
             {solveResult && solveResult.results.length > 1 && smartHints.length > 0 && (
               <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
                 <CardHeader className="pb-2">
@@ -2398,7 +3426,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent mb-3" />
+                  <div className="h-px bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent mb-3" />
 
                   {/* Example game state */}
                   <div className="text-center">
@@ -2417,7 +3445,7 @@ export default function Home() {
             )}
 
             {/* Gradient divider */}
-            <div className="h-px bg-gradient-to-r from-transparent via-teal-500/30 to-transparent" />
+            <div className="h-px bg-gradient-to-r from-transparent via-teal-500/40 to-transparent" />
 
             {/* How to Play */}
             <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
@@ -2429,7 +3457,7 @@ export default function Home() {
               </CardHeader>
               <CardContent className="text-sm text-zinc-600 dark:text-zinc-400 space-y-3">
                 <p>Sumzle is a math-based Wordle where you guess valid equations like <code className="text-xs bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">1+2=3</code>.</p>
-                <div className="h-px bg-gradient-to-r from-transparent via-zinc-200 dark:via-zinc-700 to-transparent" />
+                <div className="h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-600 to-transparent" />
                 <div className="space-y-1.5">
                   <p className="flex items-center gap-2">
                     <span className="inline-block w-4 h-4 rounded bg-emerald-500 shrink-0" />
@@ -2444,7 +3472,7 @@ export default function Home() {
                     <strong>Gray</strong> {'\u2014'} Character is not in the equation
                   </p>
                 </div>
-                <div className="h-px bg-gradient-to-r from-transparent via-zinc-200 dark:via-zinc-700 to-transparent" />
+                <div className="h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-600 to-transparent" />
                 <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-500">
                   <p>&#8226; Click a tile to select, then type a character</p>
                   <p>&#8226; Click the same tile again (or right-click) to cycle its color</p>
@@ -2464,7 +3492,17 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
           <div className="flex items-center gap-2">
             <Zap className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Sumzle HP Solver {'\u2014'} Powered by Rust</span>
+            <span>Sumzle HP Solver v{APP_VERSION} {'\u2014'} Powered by Rust {'\ud83e\udd80'}</span>
+            <a
+              href="https://github.com/SUSTechHSAS/sumzle-hp-solver"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:underline focus-visible:ring-2 focus-visible:ring-emerald-500 rounded"
+              title="View on GitHub"
+            >
+              <ExternalLink className="w-3 h-3" />
+              GitHub
+            </a>
           </div>
           <div className="flex items-center gap-4 flex-wrap justify-center">
             {health && (
