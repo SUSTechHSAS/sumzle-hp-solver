@@ -31,18 +31,47 @@ async function waitForSolver(maxWaitMs: number = SOLVER_STARTUP_TIMEOUT): Promis
 /**
  * Safely parse JSON from a response, returning null if the body is not valid JSON.
  */
-async function safeParseJson(res: Response): Promise<{ data: unknown; parseError: string | null }> {
+async function safeParseJson(res: Response): Promise<{ data: unknown; parseError: string | null; rawText: string }> {
   try {
     const text = await res.text();
     if (!text || text.trim().length === 0) {
-      return { data: null, parseError: "Empty response body from solver" };
+      return { data: null, parseError: "Empty response body from solver", rawText: text };
     }
     const parsed = JSON.parse(text);
-    return { data: parsed, parseError: null };
+    return { data: parsed, parseError: null, rawText: text };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Unknown JSON parse error";
-    return { data: null, parseError: `Invalid JSON from solver: ${msg}` };
+    const text = await res.text?.() ?? "";
+    return { data: null, parseError: `Invalid JSON from solver: ${msg}`, rawText: text };
   }
+}
+
+/**
+ * Normalize tile states in request body for Rust solver compatibility.
+ * The Rust solver's TileState enum has: correct, present, empty
+ * The frontend may send: correct, present, absent, empty
+ * Map "absent" → "empty" (Rust treats "empty with char" as absent/grey in constraint processing)
+ */
+function normalizeTileStates(body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body;
+  const b = body as Record<string, unknown>;
+
+  // Normalize rows array
+  if (Array.isArray(b.rows)) {
+    b.rows = b.rows.map((row: unknown) => {
+      if (!Array.isArray(row)) return row;
+      return row.map((tile: unknown) => {
+        if (!tile || typeof tile !== 'object') return tile;
+        const t = tile as Record<string, unknown>;
+        if (t.state === 'absent') {
+          return { ...t, state: 'empty' };
+        }
+        return tile;
+      });
+    });
+  }
+
+  return b;
 }
 
 /**
@@ -96,9 +125,30 @@ async function fetchSolver(pathname: string, search: string, method: string, bod
   const res = await fetch(solverUrl, fetchOptions);
 
   // Try to parse the response as JSON
-  const { data, parseError } = await safeParseJson(res);
+  const { data, parseError, rawText } = await safeParseJson(res);
 
   if (parseError) {
+    // Handle specific HTTP status codes with better messages
+    if (res.status === 422) {
+      // Unprocessable Entity - usually a deserialization error
+      // Extract useful info from the raw text (Axum error messages)
+      let detail = rawText.substring(0, 200);
+      if (detail.includes("unknown variant")) {
+        // e.g., "unknown variant `absent`, expected one of `correct`, `present`, `empty`"
+        const match = detail.match(/unknown variant `(\w+)`/);
+        const variant = match ? match[1] : 'unknown';
+        detail = `Unsupported tile state: "${variant}". The solver may need to be updated.`;
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Invalid request data: ${detail}`,
+          data: null,
+        },
+        { status: 400 }
+      );
+    }
+
     // The solver returned non-JSON (might be HTML error page, empty body, etc.)
     return NextResponse.json(
       {
@@ -154,6 +204,9 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  // Normalize tile states for Rust solver compatibility (absent → empty)
+  body = normalizeTileStates(body);
 
   try {
     const url = new URL(request.url);

@@ -14,7 +14,8 @@ import {
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
-  Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp
+  Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
+  Undo2, Redo2, ArrowUp
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -71,22 +72,28 @@ interface SmartHint {
   probability: number
 }
 
+interface ConstraintConflict {
+  type: 'hard' | 'soft'
+  char: string
+  message: string
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const KEYBOARD_CHARS = [
   ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
-  ['+', '-', '×', '÷', '%', '^', '=', '>', '⌫'],
+  ['+', '-', '\u00d7', '\u00f7', '%', '^', '=', '>', '\u232b'],
   ['(', ')', '!', '[', ']', 'A'],
 ]
 
 const DISPLAY_TO_API: Record<string, string> = {
-  '×': '*',
-  '÷': '/',
+  '\u00d7': '*',
+  '\u00f7': '/',
 }
 
 const API_TO_DISPLAY: Record<string, string> = {
-  '*': '×',
-  '/': '÷',
+  '*': '\u00d7',
+  '/': '\u00f7',
 }
 
 const STATE_ORDER: TileState[] = ['empty', 'correct', 'present', 'absent']
@@ -99,10 +106,10 @@ const STATE_COLORS: Record<TileState, string> = {
 }
 
 const STATE_LABELS: Record<TileState, string> = {
-  correct: '🟩 Correct',
-  present: '🟨 Present',
-  absent: '⬛ Absent',
-  empty: '⬜ Empty',
+  correct: '\ud83d\udfe9 Correct',
+  present: '\ud83d\udfe8 Present',
+  absent: '\u2b1b Absent',
+  empty: '\u2b1c Empty',
 }
 
 const MAX_ROWS = 10
@@ -111,6 +118,7 @@ const MAX_LENGTH = 15
 const DEFAULT_LENGTH = 6
 const MAX_RESULTS_DEFAULT = 500
 const MAX_SOLVE_HISTORY = 10
+const MAX_UNDO_HISTORY = 50
 
 // Valid characters for physical keyboard mapping
 const VALID_CHARS_SET = new Set([
@@ -137,7 +145,7 @@ function formatSpeed(n: number): string {
 }
 
 function formatExpression(expr: string): string {
-  return expr.replace(/\*/g, '×').replace(/\//g, '÷')
+  return expr.replace(/\*/g, '\u00d7').replace(/\//g, '\u00f7')
 }
 
 function formatUptime(secs: number): string {
@@ -149,6 +157,10 @@ function formatUptime(secs: number): string {
 function getExpressionType(expr: string): 'equation' | 'comparison' {
   if (expr.includes('>')) return 'comparison'
   return 'equation'
+}
+
+function deepCloneRows(rows: Tile[][]): Tile[][] {
+  return rows.map(row => row.map(tile => ({ ...tile })))
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -219,10 +231,53 @@ export default function Home() {
   // Download menu
   const [showDownloadMenu, setShowDownloadMenu] = useState(false)
 
+  // Undo/Redo history
+  const [historyStack, setHistoryStack] = useState<Tile[][][]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+
+  // Scroll to top visibility
+  const [showScrollTop, setShowScrollTop] = useState(false)
+
+  // Result badge flash
+  const [resultBadgeFlash, setResultBadgeFlash] = useState(false)
+
   // Refs
   const resultsRef = useRef<HTMLDivElement>(null)
   const boardRef = useRef<HTMLDivElement>(null)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const expressionLengthRef = useRef(expressionLength)
+  expressionLengthRef.current = expressionLength
+
+  // ─── Undo/Redo ────────────────────────────────────────────────────────────
+
+  const pushHistory = useCallback((newRows: Tile[][]) => {
+    setHistoryStack(prev => {
+      // Truncate any redo states beyond current index
+      const truncated = prev.slice(0, historyIndex + 1)
+      const updated = [...truncated, deepCloneRows(newRows)].slice(-MAX_UNDO_HISTORY)
+      setHistoryIndex(updated.length - 1)
+      return updated
+    })
+  }, [historyIndex])
+
+  const canUndo = historyIndex > 0
+  const canRedo = historyIndex < historyStack.length - 1
+
+  const undo = useCallback(() => {
+    if (historyIndex <= 0) return
+    const newIndex = historyIndex - 1
+    setHistoryIndex(newIndex)
+    setRows(deepCloneRows(historyStack[newIndex]))
+  }, [historyIndex, historyStack])
+
+  const redo = useCallback(() => {
+    if (historyIndex >= historyStack.length - 1) return
+    const newIndex = historyIndex + 1
+    setHistoryIndex(newIndex)
+    setRows(deepCloneRows(historyStack[newIndex]))
+  }, [historyIndex, historyStack])
 
   // ─── Dark mode effect ──────────────────────────────────────────────────────
 
@@ -249,8 +304,10 @@ export default function Home() {
   useEffect(() => {
     if (solveResult && solveResult.results.length > 0) {
       setCelebrating(true)
+      setResultBadgeFlash(true)
       const timer = setTimeout(() => setCelebrating(false), 2000)
-      return () => clearTimeout(timer)
+      const flashTimer = setTimeout(() => setResultBadgeFlash(false), 1500)
+      return () => { clearTimeout(timer); clearTimeout(flashTimer) }
     }
   }, [solveResult])
 
@@ -267,6 +324,16 @@ export default function Home() {
       return () => document.removeEventListener('mousedown', handleClick)
     }
   }, [showDownloadMenu])
+
+  // ─── Scroll to top visibility ──────────────────────────────────────────────
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowScrollTop(window.scrollY > 400)
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [])
 
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
@@ -304,15 +371,19 @@ export default function Home() {
   // ─── Update row lengths ────────────────────────────────────────────────────
 
   const updateRowLengths = useCallback((newLength: number) => {
-    setRows(prev => prev.map(row => {
-      if (row.length === newLength) return row
-      const newRow = createEmptyRow(newLength)
-      for (let i = 0; i < Math.min(row.length, newLength); i++) {
-        newRow[i] = row[i]
-      }
-      return newRow
-    }))
-  }, [])
+    setRows(prev => {
+      const updated = prev.map(row => {
+        if (row.length === newLength) return row
+        const newRow = createEmptyRow(newLength)
+        for (let i = 0; i < Math.min(row.length, newLength); i++) {
+          newRow[i] = row[i]
+        }
+        return newRow
+      })
+      pushHistory(updated)
+      return updated
+    })
+  }, [pushHistory])
 
   const handleLengthChange = useCallback((val: string) => {
     const n = parseInt(val, 10)
@@ -327,50 +398,84 @@ export default function Home() {
   const addRow = useCallback(() => {
     setRows(prev => {
       if (prev.length >= MAX_ROWS) return prev
-      return [...prev, createEmptyRow(expressionLength)]
+      const updated = [...prev, createEmptyRow(expressionLength)]
+      pushHistory(updated)
+      return updated
     })
-  }, [expressionLength])
+  }, [expressionLength, pushHistory])
 
   const removeRow = useCallback((index: number) => {
-    setRows(prev => prev.length <= 1 ? prev : prev.filter((_, i) => i !== index))
-  }, [])
+    setRows(prev => {
+      if (prev.length <= 1) return prev
+      const updated = prev.filter((_, i) => i !== index)
+      pushHistory(updated)
+      return updated
+    })
+  }, [pushHistory])
 
   const clearRow = useCallback((index: number) => {
-    setRows(prev => prev.map((row, i) => i === index ? createEmptyRow(expressionLength) : row))
-  }, [expressionLength])
+    setRows(prev => {
+      const updated = prev.map((row, i) => i === index ? createEmptyRow(expressionLength) : row)
+      pushHistory(updated)
+      return updated
+    })
+  }, [expressionLength, pushHistory])
 
   // ─── Tile interactions ─────────────────────────────────────────────────────
 
   const cycleState = useCallback((rowIdx: number, colIdx: number) => {
-    setRows(prev => prev.map((row, i) => {
-      if (i !== rowIdx) return row
-      return row.map((tile, j) => {
-        if (j !== colIdx) return tile
-        if (!tile.char && tile.state === 'empty') return tile
-        const currentIdx = STATE_ORDER.indexOf(tile.state)
-        const nextIdx = (currentIdx + 1) % STATE_ORDER.length
-        return { ...tile, state: STATE_ORDER[nextIdx] }
+    setRows(prev => {
+      const updated = prev.map((row, i) => {
+        if (i !== rowIdx) return row
+        return row.map((tile, j) => {
+          if (j !== colIdx) return tile
+          if (!tile.char && tile.state === 'empty') return tile
+          const currentIdx = STATE_ORDER.indexOf(tile.state)
+          const nextIdx = (currentIdx + 1) % STATE_ORDER.length
+          return { ...tile, state: STATE_ORDER[nextIdx] }
+        })
       })
-    }))
+      pushHistory(updated)
+      return updated
+    })
     // Trigger flip animation
     const tileKey = `${rowIdx}-${colIdx}`
     setFlippingTile(tileKey)
     setTimeout(() => setFlippingTile(null), 300)
-  }, [])
+  }, [pushHistory])
 
   const setChar = useCallback((rowIdx: number, colIdx: number, char: string) => {
-    setRows(prev => prev.map((row, i) => {
-      if (i !== rowIdx) return row
-      return row.map((tile, j) => {
-        if (j !== colIdx) return tile
-        const newState = char && tile.state === 'empty' ? 'correct' : tile.state
-        return { ...tile, char, state: newState }
+    setRows(prev => {
+      const updated = prev.map((row, i) => {
+        if (i !== rowIdx) return row
+        return row.map((tile, j) => {
+          if (j !== colIdx) return tile
+          const newState = char && tile.state === 'empty' ? 'correct' : tile.state
+          return { ...tile, char, state: newState }
+        })
       })
-    }))
+
+      // Feature 5: Auto-advance row on complete
+      if (char && rowIdx < updated.length) {
+        const currentRow = updated[rowIdx]
+        const allFilled = currentRow.every(t => t.char !== '')
+        const hasNonEmptyState = currentRow.some(t => t.state !== 'empty')
+        if (allFilled && hasNonEmptyState && updated.length < MAX_ROWS) {
+          // Check if there's already an empty row below
+          const hasEmptyRowBelow = updated.slice(rowIdx + 1).some(r => r.every(t => t.char === ''))
+          if (!hasEmptyRowBelow) {
+            updated.push(createEmptyRow(expressionLengthRef.current))
+          }
+        }
+      }
+
+      pushHistory(updated)
+      return updated
+    })
     const tileKey = `${rowIdx}-${colIdx}`
     setPoppingTile(tileKey)
     setTimeout(() => setPoppingTile(null), 200)
-  }, [])
+  }, [pushHistory])
 
   const handleTileClick = useCallback((rowIdx: number, colIdx: number, e?: React.MouseEvent) => {
     if (e?.button === 2) {
@@ -395,7 +500,7 @@ export default function Home() {
   const handleKeyPress = useCallback((key: string) => {
     if (!selectedCell) return
 
-    if (key === '⌫') {
+    if (key === '\u232b') {
       const { row, col } = selectedCell
       setChar(row, col, '')
       if (col > 0) {
@@ -424,7 +529,7 @@ export default function Home() {
         .filter(row => row.some(t => t.char !== ''))
         .map(row => row.map(tile => ({
           char: DISPLAY_TO_API[tile.char] || tile.char,
-          state: tile.state,
+          state: tile.state === 'absent' ? 'empty' : tile.state,
         })))
 
       const body = {
@@ -435,7 +540,7 @@ export default function Home() {
         max_results: MAX_RESULTS_DEFAULT,
       }
 
-      let data: any = null
+      let data: Record<string, unknown> | null = null
       let res: Response | null = null
       const MAX_RETRIES = 3
       const RETRY_DELAYS = [2000, 5000, 8000]
@@ -459,9 +564,9 @@ export default function Home() {
             throw new Error('Solver is starting up, please try again in a few seconds')
           }
 
-          if (res.ok && data.success) break
+          if (res.ok && (data as Record<string, unknown>).success) break
 
-          const errorMsg = data.error || ''
+          const errorMsg = (data as Record<string, unknown>).error as string || ''
           if (errorMsg.includes('not available') || errorMsg.includes('busy') || errorMsg.includes('starting') || errorMsg.includes('timed out') || errorMsg.includes('connection failed') || errorMsg.includes('restarting')) {
             if (attempt < MAX_RETRIES - 1) {
               await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
@@ -476,31 +581,30 @@ export default function Home() {
           }
           const msg = err instanceof Error ? err.message : 'Unknown error'
           if (msg.includes('fetch')) {
-            throw new Error('Could not reach solver. It may be starting up — please try again in a few seconds')
+            throw new Error('Could not reach solver. It may be starting up \u2014 please try again in a few seconds')
           }
           throw new Error(msg)
         }
       }
 
       if (!res || !data) {
-        throw new Error('Solver is not responding. It may be restarting — please try again shortly')
+        throw new Error('Solver is not responding. It may be restarting \u2014 please try again shortly')
       }
 
-      if (!res.ok || !data.success) {
-        const errMsg = data.error || `Solver returned status ${res.status}`
+      if (!res.ok || !(data as Record<string, unknown>).success) {
+        const errMsg = (data as Record<string, unknown>).error as string || `Solver returned status ${res.status}`
         if (errMsg.includes('busy')) {
           throw new Error('Solver is currently processing another request. Please wait a moment and try again')
         }
         if (errMsg.includes('not available') || errMsg.includes('connection failed')) {
-          throw new Error('Solver connection lost. It may be restarting — please try again shortly')
+          throw new Error('Solver connection lost. It may be restarting \u2014 please try again shortly')
         }
         throw new Error(errMsg)
       }
 
-      const result: SolveResult = data.data
+      const result: SolveResult = (data as Record<string, unknown>).data as SolveResult
       setSolveResult(result)
 
-      // Add to solve history
       const maxResultsApplied = result.results.length >= MAX_RESULTS_DEFAULT
       const historyEntry: SolveHistoryEntry = {
         id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
@@ -531,18 +635,20 @@ export default function Home() {
   const handleImport = useCallback(() => {
     try {
       const parsed = JSON.parse(importText)
+      let importedRows: Tile[][] | null = null
       if (parsed.length && typeof parsed.length === 'number') {
         setExpressionLength(parsed.length)
-        updateRowLengths(parsed.length)
       }
       if (parsed.rows && Array.isArray(parsed.rows)) {
-        const importedRows = parsed.rows.map((row: { char: string; state: TileState }[]) =>
-          row.map((tile: { char: string; state: TileState }) => ({
+        importedRows = parsed.rows.map((row: { char: string; state: string }[]) =>
+          row.map((tile: { char: string; state: string }) => ({
             char: API_TO_DISPLAY[tile.char] || tile.char,
-            state: tile.state || 'empty',
+            state: (tile.state === 'empty' && tile.char !== '') ? 'absent' :
+                   (tile.state || 'empty') as TileState,
           }))
         )
         setRows(importedRows)
+        if (importedRows) pushHistory(importedRows)
       }
       setShowImport(false)
       setImportText('')
@@ -550,7 +656,7 @@ export default function Home() {
     } catch {
       setSolveError('Invalid JSON format for import')
     }
-  }, [importText, updateRowLengths])
+  }, [importText, pushHistory])
 
   // ─── Export game state ─────────────────────────────────────────────────────
 
@@ -558,7 +664,7 @@ export default function Home() {
     const apiRows = rows.map(row =>
       row.map(tile => ({
         char: DISPLAY_TO_API[tile.char] || tile.char,
-        state: tile.state,
+        state: tile.state === 'absent' ? 'empty' : tile.state,
       }))
     )
     return JSON.stringify({ length: expressionLength, rows: apiRows }, null, 2)
@@ -574,6 +680,19 @@ export default function Home() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+Z to undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+        return
+      }
+      // Ctrl/Cmd+Y or Ctrl+Shift+Z to redo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'Z' && e.shiftKey) || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        redo()
+        return
+      }
+
       // Ctrl/Cmd+Enter to solve
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault()
@@ -597,7 +716,7 @@ export default function Home() {
       // Backspace
       if (e.key === 'Backspace') {
         e.preventDefault()
-        handleKeyPress('⌫')
+        handleKeyPress('\u232b')
         return
       }
 
@@ -640,10 +759,10 @@ export default function Home() {
       // Character input
       let char = e.key
       if (char === 'a') char = 'A'
-      if (char === '*') char = '×'
-      if (char === '/') char = '÷'
+      if (char === '*') char = '\u00d7'
+      if (char === '/') char = '\u00f7'
 
-      if (VALID_CHARS_SET.has(e.key) || (char === '×') || (char === '÷') || (char === 'A')) {
+      if (VALID_CHARS_SET.has(e.key) || (char === '\u00d7') || (char === '\u00f7') || (char === 'A')) {
         e.preventDefault()
         handleKeyPress(char)
       }
@@ -651,7 +770,7 @@ export default function Home() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedCell, expressionLength, rows.length, handleKeyPress, setChar, solve, copyState])
+  }, [selectedCell, expressionLength, rows.length, handleKeyPress, setChar, solve, copyState, undo, redo])
 
   // ─── Distributed workers ───────────────────────────────────────────────────
 
@@ -695,12 +814,14 @@ export default function Home() {
   // ─── Clear all ─────────────────────────────────────────────────────────────
 
   const clearAll = useCallback(() => {
-    setRows([createEmptyRow(expressionLength)])
+    const newRows = [createEmptyRow(expressionLength)]
+    setRows(newRows)
     setSelectedCell(null)
     setSolveResult(null)
     setSolveError(null)
     setResultFilter('')
-  }, [expressionLength])
+    pushHistory(newRows)
+  }, [expressionLength, pushHistory])
 
   // ─── Filtered results ──────────────────────────────────────────────────────
 
@@ -708,7 +829,7 @@ export default function Home() {
     if (!solveResult) return []
     let results = solveResult.results
     if (resultFilter.trim()) {
-      const lowerFilter = resultFilter.toLowerCase().replace(/×/g, '*').replace(/÷/g, '/')
+      const lowerFilter = resultFilter.toLowerCase().replace(/\u00d7/g, '*').replace(/\u00f7/g, '/')
       results = results.filter(expr =>
         expr.toLowerCase().includes(lowerFilter) ||
         formatExpression(expr).toLowerCase().includes(resultFilter.toLowerCase())
@@ -731,9 +852,9 @@ export default function Home() {
   // ─── Constraint Summary ────────────────────────────────────────────────────
 
   const constraintSummary = useMemo(() => {
-    const locked = new Map<string, number[]>()   // char → positions
-    const excluded = new Set<string>()            // chars
-    const hinted = new Map<string, number[]>()    // char → positions (present)
+    const locked = new Map<string, number[]>()
+    const excluded = new Set<string>()
+    const hinted = new Map<string, number[]>()
 
     rows.forEach(row => {
       row.forEach((tile, colIdx) => {
@@ -753,10 +874,117 @@ export default function Home() {
       })
     })
 
-    // Remove hinted chars that are also locked (they're already known)
     locked.forEach((_, char) => hinted.delete(char))
 
     return { locked, excluded, hinted }
+  }, [rows])
+
+  // ─── Constraint Conflict Detection (Feature 3) ────────────────────────────
+
+  const constraintConflicts = useMemo((): ConstraintConflict[] => {
+    const conflicts: ConstraintConflict[] = []
+
+    // Build a map: char -> { correctPositions: Set<number>, absentPositions: Set<number>, presentPositions: Set<number> }
+    const charInfo = new Map<string, {
+      correctPositions: Set<number>
+      absentPositions: Set<number>
+      presentPositions: Set<number>
+      absentRows: Set<number>
+      correctRows: Set<number>
+      presentRows: Set<number>
+    }>()
+
+    rows.forEach((row, rowIdx) => {
+      row.forEach((tile, colIdx) => {
+        if (!tile.char) return
+        const apiChar = DISPLAY_TO_API[tile.char] || tile.char
+        if (!charInfo.has(apiChar)) {
+          charInfo.set(apiChar, {
+            correctPositions: new Set(),
+            absentPositions: new Set(),
+            presentPositions: new Set(),
+            absentRows: new Set(),
+            correctRows: new Set(),
+            presentRows: new Set(),
+          })
+        }
+        const info = charInfo.get(apiChar)!
+        if (tile.state === 'correct') {
+          info.correctPositions.add(colIdx)
+          info.correctRows.add(rowIdx)
+        } else if (tile.state === 'absent') {
+          info.absentPositions.add(colIdx)
+          info.absentRows.add(rowIdx)
+        } else if (tile.state === 'present') {
+          info.presentPositions.add(colIdx)
+          info.presentRows.add(rowIdx)
+        }
+      })
+    })
+
+    charInfo.forEach((info, char) => {
+      const displayChar = API_TO_DISPLAY[char] || char
+
+      // Hard conflict: same char is both correct AND absent at the SAME position
+      for (const pos of info.correctPositions) {
+        if (info.absentPositions.has(pos)) {
+          conflicts.push({
+            type: 'hard',
+            char: displayChar,
+            message: `"${displayChar}" is both correct and absent at position ${pos + 1}`,
+          })
+        }
+      }
+
+      // Soft warning: char is absent in one row but correct in another at a different position
+      // (and absent row doesn't have the char as correct/present elsewhere)
+      if (info.absentRows.size > 0 && info.correctRows.size > 0) {
+        // Check if absent row also has this char as correct/present
+        for (const absentRowIdx of info.absentRows) {
+          const row = rows[absentRowIdx]
+          const hasCorrectOrPresentInRow = row.some(tile => {
+            const apiChar2 = DISPLAY_TO_API[tile.char] || tile.char
+            return apiChar2 === char && (tile.state === 'correct' || tile.state === 'present')
+          })
+          if (!hasCorrectOrPresentInRow) {
+            conflicts.push({
+              type: 'soft',
+              char: displayChar,
+              message: `"${displayChar}" is absent in row ${absentRowIdx + 1} but correct elsewhere \u2014 may eliminate valid solutions`,
+            })
+          }
+        }
+      }
+    })
+
+    return conflicts
+  }, [rows])
+
+  // ─── Keyboard Key State Indicator (Feature 2) ─────────────────────────────
+
+  const keyboardKeyStates = useMemo((): Map<string, TileState> => {
+    const keyStates = new Map<string, TileState>()
+
+    rows.forEach(row => {
+      row.forEach(tile => {
+        if (!tile.char) return
+        const key = tile.char
+        const currentState = keyStates.get(key)
+
+        // Priority: correct > present > absent > unknown
+        if (tile.state === 'correct') {
+          keyStates.set(key, 'correct')
+        } else if (tile.state === 'present' && currentState !== 'correct') {
+          keyStates.set(key, 'present')
+        } else if (tile.state === 'absent' && currentState !== 'correct' && currentState !== 'present') {
+          keyStates.set(key, 'absent')
+        } else if (!currentState) {
+          keyStates.set(key, 'empty')
+        }
+      })
+    })
+
+    return keyStates
   }, [rows])
 
   // ─── Smart Hints ───────────────────────────────────────────────────────────
@@ -764,7 +992,6 @@ export default function Home() {
   const smartHints = useMemo((): SmartHint[] => {
     if (!solveResult || solveResult.results.length <= 1 || !solveResult.char_probabilities.length) return []
 
-    // Get positions that already have "correct" constraints
     const correctPositions = new Set<number>()
     rows.forEach(row => {
       row.forEach((tile, colIdx) => {
@@ -774,7 +1001,6 @@ export default function Home() {
       })
     })
 
-    // Get chars that are already fully constrained (correct everywhere they appear)
     const fullyConstrainedChars = new Set<string>()
     rows.forEach(row => {
       row.forEach(tile => {
@@ -784,32 +1010,26 @@ export default function Home() {
       })
     })
 
-    // Find high-probability chars at unconstrained positions
     const hints: SmartHint[] = []
     for (const cp of solveResult.char_probabilities) {
-      if (cp.probability < 5) continue // Skip very low probability
+      if (cp.probability < 5) continue
       const displayChar = API_TO_DISPLAY[cp.char] || cp.char
       const isFullyConstrained = fullyConstrainedChars.has(cp.char)
 
-      // For unconstrained positions, find the best position for this char
       if (!isFullyConstrained) {
-        // Find positions where this char is likely but not yet constrained
         for (let pos = 0; pos < expressionLength; pos++) {
           if (correctPositions.has(pos)) continue
-
-          // Check if this position already has a correct constraint for another char
           const hasConstraintAtPos = rows.some(row =>
             row[pos]?.state === 'correct' && row[pos]?.char !== ''
           )
           if (hasConstraintAtPos) continue
-
           hints.push({
             char: cp.char,
             displayChar,
             position: pos,
             probability: cp.probability,
           })
-          break // One hint per char
+          break
         }
       }
 
@@ -883,6 +1103,12 @@ export default function Home() {
           0%, 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
           50% { box-shadow: 0 0 0 6px rgba(16,185,129,0); }
         }
+        @keyframes badgeFlash {
+          0%, 100% { transform: scale(1); }
+          25% { transform: scale(1.25); }
+          50% { transform: scale(1.1); }
+          75% { transform: scale(1.2); }
+        }
         .tile-flip {
           animation: tileFlip 0.3s ease-in-out;
         }
@@ -891,6 +1117,28 @@ export default function Home() {
         }
         .pulse-ring {
           animation: pulseRing 1.5s ease-in-out infinite;
+        }
+        .badge-flash {
+          animation: badgeFlash 0.6s ease-in-out;
+        }
+        /* Absent tile diagonal stripe pattern */
+        .tile-absent-stripes {
+          background-image: repeating-linear-gradient(
+            -45deg,
+            transparent,
+            transparent 4px,
+            rgba(0,0,0,0.06) 4px,
+            rgba(0,0,0,0.06) 5px
+          );
+        }
+        .dark .tile-absent-stripes {
+          background-image: repeating-linear-gradient(
+            -45deg,
+            transparent,
+            transparent 4px,
+            rgba(255,255,255,0.04) 4px,
+            rgba(255,255,255,0.04) 5px
+          );
         }
         /* Noise texture for dark mode */
         .dark-noise::before {
@@ -901,6 +1149,16 @@ export default function Home() {
           pointer-events: none;
           background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
           background-repeat: repeat;
+        }
+        /* Keyboard key state indicators */
+        .key-correct {
+          border-bottom: 3px solid rgb(16, 185, 129) !important;
+        }
+        .key-present {
+          border-bottom: 3px solid rgb(245, 158, 11) !important;
+        }
+        .key-absent {
+          opacity: 0.5;
         }
       `}</style>
       {/* ─── Header ──────────────────────────────────────────────────────────── */}
@@ -919,7 +1177,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Engine status indicator */}
             <Badge
               variant="secondary"
               className={`hidden sm:flex items-center gap-1.5 text-xs ${
@@ -940,8 +1197,8 @@ export default function Home() {
               {solverOnline === null
                 ? 'Starting...'
                 : solverOnline
-                  ? `${health?.cpu_cores || '?'} cores · ${health?.parallel_threads || '?'} threads`
-                  : `Offline${solverLastChecked ? ` · ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
+                  ? `${health?.cpu_cores || '?'} cores \u00b7 ${health?.parallel_threads || '?'} threads`
+                  : `Offline${solverLastChecked ? ` \u00b7 ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
               }
             </Badge>
             <Button
@@ -965,11 +1222,34 @@ export default function Home() {
           <div className="space-y-4">
 
             {/* Settings Card */}
-            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <MonitorSmartphone className="w-4 h-4 text-emerald-500" />
                   Puzzle Settings
+                  {/* Undo/Redo buttons */}
+                  <div className="ml-auto flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={undo}
+                      disabled={!canUndo}
+                      title="Undo (Ctrl+Z)"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={redo}
+                      disabled={!canRedo}
+                      title="Redo (Ctrl+Y)"
+                    >
+                      <Redo2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -983,7 +1263,7 @@ export default function Home() {
                       onClick={() => handleLengthChange(String(expressionLength - 1))}
                       disabled={expressionLength <= MIN_LENGTH}
                     >
-                      −
+                      &minus;
                     </Button>
                     <Input
                       type="number"
@@ -1037,39 +1317,47 @@ export default function Home() {
             <div className="flex flex-wrap gap-1.5">
               <span className="text-xs text-zinc-500 dark:text-zinc-400 self-center mr-1">Presets:</span>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
+                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
                 setExpressionLength(5)
                 updateRowLengths(5)
-                setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]])
+                setRows(newRows)
+                pushHistory(newRows)
                 setSelectedCell(null)
                 setSolveResult(null)
               }}>
                 1+1=2
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
+                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]]
                 setExpressionLength(6)
                 updateRowLengths(6)
-                setRows([[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]])
+                setRows(newRows)
+                pushHistory(newRows)
                 setSelectedCell(null)
                 setSolveResult(null)
               }}>
                 Starter Len 6
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                setExpressionLength(8)
-                updateRowLengths(8)
-                setRows([
+                const newRows = [
                   [{char:'1',state:'correct'},{char:'2',state:'present'},{char:'+',state:'correct'},{char:'3',state:'absent'},{char:'=',state:'correct'},{char:'5',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'}],
                   [{char:'2',state:'present'},{char:'\u00d7',state:'correct'},{char:'3',state:'correct'},{char:'=',state:'correct'},{char:'6',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'},{char:'',state:'empty'}],
-                ])
+                ]
+                setExpressionLength(8)
+                updateRowLengths(8)
+                setRows(newRows)
+                pushHistory(newRows)
                 setSelectedCell(null)
                 setSolveResult(null)
               }}>
                 Hard Mode
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
+                const newRows = [createEmptyRow(6)]
                 setExpressionLength(6)
                 updateRowLengths(6)
-                setRows([createEmptyRow(6)])
+                setRows(newRows)
+                pushHistory(newRows)
                 setSelectedCell(null)
                 setSolveResult(null)
                 setSolveError(null)
@@ -1242,12 +1530,21 @@ export default function Home() {
             )}
 
             {/* Constraint Board */}
-            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-emerald-500" />
-                  Constraint Board
-                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-emerald-500" />
+                    Constraint Board
+                  </CardTitle>
+                  {/* Conflict warning badges */}
+                  {constraintConflicts.length > 0 && (
+                    <Badge className="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400 border-red-200 dark:border-red-800 text-[10px] px-1.5 py-0">
+                      <AlertTriangle className="w-3 h-3 mr-1" />
+                      {constraintConflicts.filter(c => c.type === 'hard').length} conflict{constraintConflicts.filter(c => c.type === 'hard').length !== 1 ? 's' : ''}
+                    </Badge>
+                  )}
+                </div>
                 <CardDescription>
                   Click tile to select, click again to cycle state. Type with keyboard. Use arrow keys to navigate.
                 </CardDescription>
@@ -1258,7 +1555,7 @@ export default function Home() {
                   {STATE_ORDER.map(s => (
                     <span
                       key={s}
-                      className={`px-2 py-0.5 rounded-lg border text-xs font-medium ${STATE_COLORS[s]}`}
+                      className={`px-2 py-0.5 rounded-lg border text-xs font-medium ${STATE_COLORS[s]} ${s === 'absent' ? 'tile-absent-stripes' : ''}`}
                     >
                       {STATE_LABELS[s]}
                     </span>
@@ -1276,11 +1573,11 @@ export default function Home() {
                           const tileKey = `${rowIdx}-${colIdx}`
                           const isPopping = poppingTile === tileKey
                           const isFlipping = flippingTile === tileKey
-                          // Check if this tile matches the recommended solution
                           const isRecommended = solveResult?.recommended &&
                             tile.state === 'correct' &&
                             colIdx < solveResult.recommended.length &&
                             (DISPLAY_TO_API[tile.char] || tile.char) === solveResult.recommended[colIdx]
+                          const isAbsent = tile.state === 'absent'
 
                           return (
                             <button
@@ -1288,8 +1585,9 @@ export default function Home() {
                               className={`
                                 w-10 h-10 sm:w-11 sm:h-11 rounded-lg border-2 font-mono font-bold text-lg
                                 flex items-center justify-center transition-all duration-150 select-none
-                                relative
+                                relative overflow-hidden
                                 ${STATE_COLORS[tile.state]}
+                                ${isAbsent ? 'tile-absent-stripes opacity-90' : ''}
                                 ${isSelected ? 'ring-2 ring-emerald-500 ring-offset-1 dark:ring-offset-zinc-900 shadow-md pulse-ring' : ''}
                                 ${isPopping ? 'scale-110' : ''}
                                 ${isFlipping ? 'tile-flip' : ''}
@@ -1303,6 +1601,12 @@ export default function Home() {
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
+                              {/* Absent tile watermark */}
+                              {isAbsent && (
+                                <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold opacity-[0.08] pointer-events-none select-none" aria-hidden="true">
+                                  {'\u2715'}
+                                </span>
+                              )}
                               {colIdx < row.length - 1 && (
                                 <span className="absolute -right-[3px] top-1/2 -translate-y-1/2 w-[1px] h-5 bg-zinc-200 dark:bg-zinc-700 opacity-50" />
                               )}
@@ -1338,6 +1642,31 @@ export default function Home() {
               </CardContent>
             </Card>
 
+            {/* Constraint Conflict Warnings (Feature 3) */}
+            {constraintConflicts.length > 0 && (
+              <div className="space-y-1.5">
+                {constraintConflicts.map((conflict, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-start gap-2 p-2.5 rounded-lg border ${
+                      conflict.type === 'hard'
+                        ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
+                        : 'bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800'
+                    }`}
+                  >
+                    <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      conflict.type === 'hard' ? 'text-red-500' : 'text-amber-500'
+                    }`} />
+                    <p className={`text-xs ${
+                      conflict.type === 'hard' ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'
+                    }`}>
+                      {conflict.message}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Constraint Summary Bar */}
             {(() => {
               const { locked, excluded, hinted } = constraintSummary
@@ -1356,7 +1685,7 @@ export default function Home() {
                         key={`lock-${char}`}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
                       >
-                        🟩 {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">{positions.map(p => p + 1).join(',')}</sub>
+                        {'\ud83d\udfe9'} {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">{positions.map(p => p + 1).join(',')}</sub>
                       </span>
                     ))}
                     {Array.from(hinted.entries()).map(([char, positions]) => (
@@ -1364,7 +1693,7 @@ export default function Home() {
                         key={`hint-${char}`}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border border-amber-200 dark:border-amber-800"
                       >
-                        🟨 {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">≠{positions.map(p => p + 1).join(',')}</sub>
+                        {'\ud83d\udfe8'} {API_TO_DISPLAY[char] || char}<sub className="text-[9px] font-normal">{'\u2260'}{positions.map(p => p + 1).join(',')}</sub>
                       </span>
                     ))}
                     {Array.from(excluded).map((char) => (
@@ -1372,7 +1701,7 @@ export default function Home() {
                         key={`excl-${char}`}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono font-bold bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700"
                       >
-                        ⬛ {API_TO_DISPLAY[char] || char}
+                        {'\u2b1b'} {API_TO_DISPLAY[char] || char}
                       </span>
                     ))}
                   </div>
@@ -1381,7 +1710,7 @@ export default function Home() {
             })()}
 
             {/* Keyboard */}
-            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+            <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
@@ -1397,38 +1726,50 @@ export default function Home() {
                 </div>
                 {showShortcuts && (
                   <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150 space-y-1">
-                    <div>←→ Navigate &nbsp;|&nbsp; ↑↓ Row &nbsp;|&nbsp; ⌫ Delete &nbsp;|&nbsp; Esc Deselect &nbsp;|&nbsp; Click: Select/Cycle</div>
-                    <div className="text-emerald-600 dark:text-emerald-400 font-medium">⌘↵ / Ctrl+Enter: Solve &nbsp;|&nbsp; ⌘E / Ctrl+E: Export</div>
+                    <div>{'\u2190\u2192'} Navigate | {'\u2191\u2193'} Row | {'\u232b'} Delete | Esc Deselect | Click: Select/Cycle</div>
+                    <div className="text-emerald-600 dark:text-emerald-400 font-medium">{'\u2318\u21b5'} / Ctrl+Enter: Solve | {'\u2318'}E / Ctrl+E: Export | Ctrl+Z/Y: Undo/Redo</div>
                   </div>
                 )}
                 <div className="space-y-1.5">
                   {KEYBOARD_CHARS.map((line, lineIdx) => (
                     <div key={lineIdx} className="flex justify-center gap-1">
-                      {line.map((key) => (
-                        <Button
-                          key={key}
-                          variant="outline"
-                          size="sm"
-                          className={`
-                            h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500
-                            ${key === '⌫' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
-                            ${selectedCell
-                              ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
-                              : 'opacity-50'
-                            }
-                          `}
-                          onClick={() => handleKeyPress(key)}
-                          disabled={!selectedCell}
-                        >
-                          {key}
-                        </Button>
-                      ))}
+                      {line.map((key) => {
+                        const keyState = keyboardKeyStates.get(key)
+                        const stateClass = keyState === 'correct'
+                          ? 'key-correct'
+                          : keyState === 'present'
+                            ? 'key-present'
+                            : keyState === 'absent'
+                              ? 'key-absent'
+                              : ''
+
+                        return (
+                          <Button
+                            key={key}
+                            variant="outline"
+                            size="sm"
+                            className={`
+                              h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500
+                              ${key === '\u232b' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
+                              ${stateClass}
+                              ${selectedCell
+                                ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
+                                : 'opacity-50'
+                              }
+                            `}
+                            onClick={() => handleKeyPress(key)}
+                            disabled={!selectedCell}
+                          >
+                            {key}
+                          </Button>
+                        )
+                      })}
                     </div>
                   ))}
                 </div>
                 {selectedCell && (
                   <p className="text-xs text-zinc-400 mt-2 text-center">
-                    Selected: Row {selectedCell.row + 1}, Col {selectedCell.col + 1} — Type or use keyboard
+                    Selected: Row {selectedCell.row + 1}, Col {selectedCell.col + 1} {'\u2014'} Type or use keyboard
                   </p>
                 )}
                 {!selectedCell && (
@@ -1464,9 +1805,9 @@ export default function Home() {
 
             {/* Solve Button - with gradient border effect + shortcut badge */}
             <div className="relative group lg:static sticky bottom-4 z-40">
-              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-500 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
+              <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
               <Button
-                className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl focus-visible:ring-2 focus-visible:ring-emerald-500"
+                className="relative w-full h-12 text-base font-bold bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 hover:from-emerald-600 hover:via-teal-600 hover:to-emerald-700 text-white shadow-lg shadow-emerald-500/20 transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/30 rounded-xl focus-visible:ring-2 focus-visible:ring-emerald-500"
                 onClick={solve}
                 disabled={solving}
                 size="lg"
@@ -1480,7 +1821,7 @@ export default function Home() {
                   <>
                     <Play className="w-5 h-5 mr-2" />
                     Solve with Rust Engine
-                    <span className="ml-2 text-xs opacity-70 font-normal hidden sm:inline">⌘↵</span>
+                    <span className="ml-2 text-xs opacity-70 font-normal hidden sm:inline">{'\u2318\u21b5'}</span>
                   </>
                 )}
               </Button>
@@ -1504,7 +1845,7 @@ export default function Home() {
 
             {/* Stats Card */}
             {(solveResult || health) && (
-              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Gauge className="w-4 h-4 text-emerald-500" />
@@ -1589,7 +1930,7 @@ export default function Home() {
                             </span>
                           </div>
                           <div className="flex items-end gap-1.5 h-12">
-                            {[...recentSpeeds].reverse().map((s, i) => {
+                            {[...recentSpeeds].reverse().map((s) => {
                               const maxSpeed = Math.max(...recentSpeeds.map(r => r.speed), 1)
                               const height = Math.max(8, (s.speed / maxSpeed) * 100)
                               return (
@@ -1642,14 +1983,14 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
                     <CardTitle className="text-base">Results</CardTitle>
                     <Badge
                       variant="secondary"
-                      className={`ml-auto relative ${celebrating ? 'animate-bounce' : ''}`}
+                      className={`ml-auto relative ${celebrating ? 'animate-bounce' : ''} ${resultBadgeFlash ? 'badge-flash' : ''}`}
                     >
                       {solveResult.results.length >= MAX_RESULTS_DEFAULT
                         ? `${MAX_RESULTS_DEFAULT.toLocaleString()}+ found`
@@ -1679,7 +2020,7 @@ export default function Home() {
                       {/* Unique solution banner */}
                       {solveResult.results.length === 1 && (
                         <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-200 dark:border-emerald-800 text-center animate-in zoom-in-50 duration-300">
-                          <span className="text-2xl mb-1 block">{'🎉'}</span>
+                          <span className="text-2xl mb-1 block">{'\ud83c\udf89'}</span>
                           <p className="text-sm font-bold text-emerald-700 dark:text-emerald-400">Unique Solution Found!</p>
                           <code className="text-lg font-mono font-black text-emerald-600 dark:text-emerald-300 tracking-widest">
                             {formatExpression(solveResult.results[0])}
@@ -1690,7 +2031,7 @@ export default function Home() {
                       {/* No results helpful message */}
                       {solveResult.results.length === 0 && (
                         <div className="mb-3 p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-center">
-                          <span className="text-2xl mb-2 block">{'🔍'}</span>
+                          <span className="text-2xl mb-2 block">{'\ud83d\udd0d'}</span>
                           <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">No solutions found</p>
                           <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
                             <p>Try these to find results:</p>
@@ -1736,8 +2077,8 @@ export default function Home() {
                               onChange={(e) => setResultSort(e.target.value as typeof resultSort)}
                             >
                               <option value="default">Default</option>
-                              <option value="az">A→Z</option>
-                              <option value="za">Z→A</option>
+                              <option value="az">A{'\u2192'}Z</option>
+                              <option value="za">Z{'\u2192'}A</option>
                               <option value="shortest">Shortest</option>
                               <option value="longest">Longest</option>
                             </select>
@@ -1758,13 +2099,13 @@ export default function Home() {
                                     className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-t-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('json')}
                                   >
-                                    📄 JSON (full data)
+                                    {'\ud83d\udcc4'} JSON (full data)
                                   </button>
                                   <button
                                     className="w-full text-left px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-b-lg transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500"
                                     onClick={() => handleDownload('txt')}
                                   >
-                                    📝 Plain text (list)
+                                    {'\ud83d\udcdd'} Plain text (list)
                                   </button>
                                 </div>
                               )}
@@ -1943,7 +2284,7 @@ export default function Home() {
                         key={idx}
                         className="flex items-center gap-3 p-2.5 rounded-lg bg-gradient-to-r from-amber-50 to-teal-50 dark:from-amber-950/20 dark:to-teal-950/20 border border-amber-100 dark:border-amber-900/30"
                       >
-                        <span className="text-lg">{'💡'}</span>
+                        <span className="text-lg">{'\ud83d\udca1'}</span>
                         <div className="flex-1">
                           <p className="text-xs text-zinc-700 dark:text-zinc-300">
                             Try constraining <strong className="font-mono text-amber-600 dark:text-amber-400">{hint.displayChar}</strong> at position <strong>{hint.position + 1}</strong>
@@ -1986,11 +2327,11 @@ export default function Home() {
                     </div>
                     <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">2</span>
-                      <span className="text-zinc-600 dark:text-zinc-400">Cycle colors: 🟩→🟨→⬛</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Cycle colors: {'\ud83d\udfe9'}{'\u2192'}{'\ud83d\udfe8'}{'\u2192'}{'\u2b1b'}</span>
                     </div>
                     <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center shrink-0 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">3</span>
-                      <span className="text-zinc-600 dark:text-zinc-400">Hit Solve! (⌘↵)</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">Hit Solve! ({'\u2318\u21b5'})</span>
                     </div>
                     <div className="flex items-start gap-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50">
                       <Target className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
@@ -2008,9 +2349,9 @@ export default function Home() {
                       <div className="w-8 h-8 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center shadow-inner">+</div>
                       <div className="w-8 h-8 rounded-lg border-2 bg-amber-400 text-amber-950 border-amber-500 font-mono font-bold text-sm flex items-center justify-center shadow-inner">2</div>
                       <div className="w-8 h-8 rounded-lg border-2 bg-emerald-500 text-white border-emerald-600 font-mono font-bold text-sm flex items-center justify-center shadow-inner">=</div>
-                      <div className="w-8 h-8 rounded-lg border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-sm flex items-center justify-center shadow-inner">3</div>
+                      <div className="w-8 h-8 rounded-lg border-2 bg-zinc-400 text-zinc-800 border-zinc-500 font-mono font-bold text-sm flex items-center justify-center shadow-inner tile-absent-stripes">3</div>
                     </div>
-                    <p className="text-[10px] text-zinc-400 mt-1">🟩 Right spot · 🟨 Wrong spot · ⬛ Not in equation</p>
+                    <p className="text-[10px] text-zinc-400 mt-1">{'\ud83d\udfe9'} Right spot {'\u00b7'} {'\ud83d\udfe8'} Wrong spot {'\u00b7'} {'\u2b1b'} Not in equation</p>
                   </div>
                 </CardContent>
               </Card>
@@ -2033,15 +2374,15 @@ export default function Home() {
                 <div className="space-y-1.5">
                   <p className="flex items-center gap-2">
                     <span className="inline-block w-4 h-4 rounded bg-emerald-500 shrink-0" />
-                    <strong>Green</strong> — Correct character in the right position
+                    <strong>Green</strong> {'\u2014'} Correct character in the right position
                   </p>
                   <p className="flex items-center gap-2">
                     <span className="inline-block w-4 h-4 rounded bg-amber-400 shrink-0" />
-                    <strong>Yellow</strong> — Character exists but in the wrong position
+                    <strong>Yellow</strong> {'\u2014'} Character exists but in the wrong position
                   </p>
                   <p className="flex items-center gap-2">
                     <span className="inline-block w-4 h-4 rounded bg-zinc-400 shrink-0" />
-                    <strong>Gray</strong> — Character is not in the equation
+                    <strong>Gray</strong> {'\u2014'} Character is not in the equation
                   </p>
                 </div>
                 <div className="h-px bg-gradient-to-r from-transparent via-zinc-200 dark:via-zinc-700 to-transparent" />
@@ -2049,9 +2390,9 @@ export default function Home() {
                   <p>&#8226; Click a tile to select, then type a character</p>
                   <p>&#8226; Click the same tile again (or right-click) to cycle its color</p>
                   <p>&#8226; Use arrow keys to navigate between tiles</p>
-                  <p>&#8226; Supports: +−×÷%^=()![]A (permutation)</p>
+                  <p>&#8226; Supports: +{'\u2212'}{'\u00d7'}{'\u00f7'}%^=()![]A (permutation)</p>
                   <p>&#8226; <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">[x/y]</code> = floor division, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">n!</code> = factorial, <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">mAn</code> = permutation</p>
-                  <p>&#8226; <strong className="text-emerald-600 dark:text-emerald-400">Keyboard shortcuts:</strong> ⌘↵ Solve, ⌘E Export</p>
+                  <p>&#8226; <strong className="text-emerald-600 dark:text-emerald-400">Keyboard shortcuts:</strong> {'\u2318\u21b5'} Solve, {'\u2318'}E Export, Ctrl+Z/Y Undo/Redo</p>
                 </div>
               </CardContent>
             </Card>
@@ -2064,23 +2405,34 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
           <div className="flex items-center gap-2">
             <Zap className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Sumzle HP Solver — Powered by Rust</span>
+            <span>Sumzle HP Solver {'\u2014'} Powered by Rust</span>
           </div>
           <div className="flex items-center gap-4 flex-wrap justify-center">
             {health && (
               <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Engine v{health.version} · {formatUptime(health.uptime_secs)}
+                Engine v{health.version} {'\u00b7'} {formatUptime(health.uptime_secs)}
               </span>
             )}
             <span className="flex items-center gap-1.5">
               <Cpu className="w-3 h-3" />
-              {health?.cpu_cores || '?'} cores · {health?.parallel_threads || '?'} threads
+              {health?.cpu_cores || '?'} cores {'\u00b7'} {health?.parallel_threads || '?'} threads
             </span>
             <span>Parallel Multi-Core Solver</span>
           </div>
         </div>
       </footer>
+
+      {/* ─── Scroll to Top Button ──────────────────────────────────────────── */}
+      {showScrollTop && (
+        <button
+          className="fixed bottom-20 right-4 z-50 w-10 h-10 rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-500/30 flex items-center justify-center hover:bg-emerald-600 transition-all duration-200 hover:scale-110 focus-visible:ring-2 focus-visible:ring-emerald-500"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          aria-label="Scroll to top"
+        >
+          <ArrowUp className="w-5 h-5" />
+        </button>
+      )}
     </div>
   )
 }

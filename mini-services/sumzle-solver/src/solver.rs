@@ -11,12 +11,13 @@ pub const VALID_CHARS: &[char] = &[
 /// Maximum operand value for pruning
 pub const MAX_OPERAND_VALUE: i64 = 30;
 
-/// Tile state from the game (matches JS: correct/present/empty)
+/// Tile state from the game (matches JS: correct/present/absent/empty)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TileState {
     Correct,
     Present,
+    Absent,
     Empty,
 }
 
@@ -179,7 +180,12 @@ impl SumzleSolver {
                     TileState::Present => {
                         gk.cannot_be_at[c].insert(ch);
                     }
+                    TileState::Absent => {
+                        gk.cannot_be_at[c].insert(ch);
+                    }
                     TileState::Empty => {
+                        // Empty state with a char should not normally happen,
+                        // but treat same as absent for backward compatibility
                         gk.cannot_be_at[c].insert(ch);
                     }
                 }
@@ -214,7 +220,7 @@ impl SumzleSolver {
                         match tile.state {
                             TileState::Correct => green_in_row += 1,
                             TileState::Present => yellow_in_row += 1,
-                            TileState::Empty => {}
+                            TileState::Absent | TileState::Empty => {}
                         }
                     }
                 }
@@ -222,10 +228,10 @@ impl SumzleSolver {
                 let min_required_this_row = green_in_row + yellow_in_row;
                 min_required_overall = min_required_overall.max(min_required_this_row);
 
-                let has_empty_state = row.iter().any(|t| {
-                    t.char.chars().next() == Some(ch) && t.state == TileState::Empty
+                let has_absent_state = row.iter().any(|t| {
+                    t.char.chars().next() == Some(ch) && (t.state == TileState::Absent || t.state == TileState::Empty)
                 });
-                if has_empty_state {
+                if has_absent_state {
                     let exact_count_this_row = green_in_row + yellow_in_row;
                     match derived_exact_count {
                         None => derived_exact_count = Some(exact_count_this_row),
