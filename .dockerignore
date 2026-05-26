@@ -1,0 +1,10 @@
+node_modules
+.next
+mini-services/sumzle-solver/target
+*.db
+*.log
+.git
+.github
+skills
+db
+prisma/dev.db

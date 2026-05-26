@@ -52,3 +52,15 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Rust build artifacts
+mini-services/sumzle-solver/target/
+
+# Database files
+*.db
+*.db-journal
+prisma/dev.db
+
+# Mini service logs
+mini-services/*/dev.log
+mini-services/*/dev.out.log

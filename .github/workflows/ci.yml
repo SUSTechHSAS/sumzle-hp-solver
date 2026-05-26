@@ -1,0 +1,136 @@
+name: CI - Test & Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+  RUST_VERSION: "1.82"
+  BUN_VERSION: "1"
+
+jobs:
+  # ─── Frontend Lint & Type Check ─────────────────────────────────────────
+  frontend-lint:
+    name: Frontend Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run ESLint
+        run: bun run lint
+
+      - name: Type check
+        run: bunx tsc --noEmit
+
+  # ─── Rust Test & Clippy ────────────────────────────────────────────────
+  rust-test:
+    name: Rust Test & Clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mini-services/sumzle-solver
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          toolchain: "1.82"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "mini-services/sumzle-solver -> target"
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --release
+        env:
+          RUST_MIN_STACK: 16777216
+
+  # ─── Integration Test ──────────────────────────────────────────────────
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, rust-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.82"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "mini-services/sumzle-solver -> target"
+
+      - name: Build Rust solver
+        run: cargo build --release --manifest-path mini-services/sumzle-solver/Cargo.toml
+        env:
+          RUST_MIN_STACK: 16777216
+
+      - name: Start Rust solver in background
+        run: |
+          RUST_MIN_STACK=16777216 ./mini-services/sumzle-solver/target/release/sumzle-solver &
+          sleep 3
+
+      - name: Verify solver health
+        run: |
+          RESPONSE=$(curl -s http://127.0.0.1:3031/api/health)
+          echo "Health response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['success'], 'Health check failed'; print('Solver is healthy')"
+
+      - name: Test basic solve
+        run: |
+          RESPONSE=$(curl -s -X POST http://127.0.0.1:3031/api/solve/parallel \
+            -H "Content-Type: application/json" \
+            -d '{"length":5,"rows":[[{"char":"1","state":"correct"},{"char":"+","state":"correct"},{"char":"1","state":"correct"},{"char":"=","state":"correct"},{"char":"2","state":"correct"}]],"mode":"parallel"}')
+          echo "Solve response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          assert d['success'], f'Solve failed: {d.get(\"error\", \"unknown\")}'
+          results = d['data']['results']
+          assert '1+1=2' in results, f'1+1=2 not in results: {results}'
+          print(f'Integration test passed! Found {len(results)} result(s)')
+          "
+
+      - name: Test solve with absent states
+        run: |
+          RESPONSE=$(curl -s -X POST http://127.0.0.1:3031/api/solve/parallel \
+            -H "Content-Type: application/json" \
+            -d '{"length":5,"rows":[[{"char":"1","state":"correct"},{"char":"-","state":"absent"},{"char":"1","state":"correct"},{"char":"=","state":"correct"},{"char":"2","state":"correct"}]],"mode":"parallel"}')
+          echo "Solve with absent response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          assert d['success'], f'Solve failed: {d.get(\"error\", \"unknown\")}'
+          results = d['data']['results']
+          # Should not contain '-' operator expressions
+          for r in results:
+            assert '-' not in r, f'Found absent operator in result: {r}'
+          print(f'Absent state test passed! Found {len(results)} result(s)')
+          "
+
+      - name: Stop solver
+        if: always()
+        run: pkill -f sumzle-solver || true
