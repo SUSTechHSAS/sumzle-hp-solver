@@ -1,5 +1,5 @@
 # ─── Stage 1: Build Rust Solver ──────────────────────────────────────────
-FROM rust:1.82-bookworm AS rust-builder
+FROM rust:1.85-bookworm AS rust-builder
 
 WORKDIR /build
 COPY mini-services/sumzle-solver/ ./
