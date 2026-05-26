@@ -12,7 +12,7 @@ on:
         default: "v0.1.0-dev"
 
 env:
-  RUST_VERSION: "1.85"
+  RUST_VERSION: "stable"
 
 jobs:
   # ─── Build Rust Solver for all platforms ──────────────────────────────
@@ -66,7 +66,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          toolchain: "1.85"
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
