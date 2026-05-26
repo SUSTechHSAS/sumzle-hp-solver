@@ -1070,3 +1070,116 @@ Unresolved Issues / Risks:
 4. Test distributed computing end-to-end
 5. Add behavioral consistency test suite (compare JS vs Rust solver results)
 6. Add more preset puzzles (e.g., length 7-8 with interesting constraints)
+
+---
+
+## Task ID: 15
+**Agent**: Full-Stack Developer
+**Task**: Implement Next Batch of Features for Sumzle HP Solver
+
+### Work Log:
+
+1. **Expression Length Quick-Select Buttons (Feature 1)**: Added a row of small rounded pill buttons (3, 5, 6, 7, 8) below the expression length input. Clicking one instantly sets the expression length. Active length highlighted with emerald styling.
+
+2. **Constraint Row Action Buttons (Feature 2)**: Added small icon buttons at the end of each constraint row:
+   - Duplicate row button (CopyPlus icon) — copies current row as new row below
+   - Move up button (ArrowUp icon) — swaps row with the one above
+   - Move down button (ArrowDown icon) — swaps row with the one below
+   - All buttons respect bounds (disabled at edges) and MAX_ROWS limit
+   - New callbacks: `duplicateRow`, `moveRowUp`, `moveRowDown`
+
+3. **Comprehensive Stats Dashboard (Feature 3)**: Enhanced the stats section with persisted dashboard:
+   - Total solves count (persisted in localStorage via `sumzle-stats` key)
+   - Average solve time
+   - Fastest solve time
+   - Most common expression length solved
+   - Success rate (non-zero results / total solves)
+   - Displayed as a 5-column grid of stat cards with color-coded icons (emerald, amber, teal, cyan, rose)
+   - New interface: `PersistedStats`, new state: `persistedStats`
+   - Stats persist across page reloads
+
+4. **Animated Confetti on Unique Solution (Feature 4)**: When exactly 1 result is found, CSS-based confetti animation:
+   - 30 particles with random positions, delays, durations, sizes, and colors
+   - Falls from top of results section with rotation
+   - Uses pure CSS `confettiFall` keyframe animation (no libraries)
+   - Subtle but celebratory, lasts ~4 seconds
+   - New state: `showConfetti`, new CSS: `confetti-particle`, `confettiFall` keyframe
+
+5. **Solve Mode Selector (Feature 5)**: Added a dropdown to choose solve mode:
+   - "Parallel (multi-core)" — default, uses `/api/solve/parallel`
+   - "Sequential (debug)" — uses `/api/solve/local`
+   - Uses shadcn/ui Select component
+   - Mode badge shown next to solve button text (Multi/Seq)
+   - Sends the `mode` parameter to the API and uses correct endpoint
+   - New state: `solveMode`
+
+6. **Keyboard Sound Feedback Toggle (Feature 6)**: Added speaker/mute icon button near keyboard:
+   - When enabled, plays a subtle click sound on key press using Web Audio API
+   - Short sine wave at ~800-1000Hz, 50ms duration, 0.03 gain (subtle)
+   - Preference stored in localStorage (`sumzle-sound`)
+   - Toggle button shows Volume2 (enabled) or VolumeX (disabled) icon
+   - New callbacks: `playKeySound`, `toggleSound`, new state: `soundEnabled`
+
+7. **Accessibility Improvements (Feature 7)**:
+   - Added `role="grid"` to the constraint board container
+   - Added `role="gridcell"` and `aria-roledescription="puzzle tile"` to each tile button
+   - Added `aria-live="polite"` to the solutions tab content
+   - Added `role="progressbar"` and `aria-label` to the solve progress bar
+   - Added `aria-valuetext` to the progress bar showing solve time
+   - Added skip-to-content link at the top of the page (`.skip-to-content` CSS)
+   - Added `id="main-content"` to the main element
+
+8. **Auto-Solve on Constraint Complete (Feature 8)**: Added a toggle switch that auto-triggers solve:
+   - When enabled, automatically triggers solve when all tiles in at least one row have characters AND at least one tile has a non-empty state
+   - Uses `autoSolveTrigger` useMemo to detect when conditions are met
+   - Toggle switch uses shadcn/ui Switch component with emerald color when active
+   - Wand2 icon next to toggle changes color based on state
+   - Default off, placed near the solve button
+   - New state: `autoSolve`, new memo: `autoSolveTrigger`
+   - useEffect placed after `solve` definition to avoid hoisting issues
+
+9. **Tile Hover Preview (Feature 9)**: Added subtle preview of next state cycle on hover:
+   - Small colored dot in bottom-right corner appears on hover via CSS (`tile-preview-indicator`)
+   - Color represents the NEXT state in the cycle (correct→amber, present→zinc, absent→emerald)
+   - Pure CSS transition (opacity 0→1 on hover), no JavaScript
+   - Added `tile-hover-preview` class to tile buttons
+
+10. **Keyboard Active State Enhancement (Feature 10)**: Added ripple animation on key press:
+    - When a key is pressed/clicked, a brief ripple effect emanates from the key
+    - Uses CSS `keyRipple` keyframe animation (scale 0→2.5, opacity 0.5→0)
+    - `key-ripple::after` pseudo-element with emerald background
+    - Active key tracked via `activeKey` state, cleared after 300ms
+    - Added `relative overflow-hidden` to keyboard key buttons for proper ripple clipping
+
+11. **Results Section Empty State Enhancement (Feature 11)**: When no results yet (not solved), shows:
+    - Animated pulsing magnifying glass icon with question mark badge
+    - Rotating tips that change every 4 seconds:
+      - "Enter constraints and hit Solve!"
+      - "Try the 1+1=2 preset to get started"
+      - "Use keyboard shortcuts: Ctrl+Enter to solve"
+    - Tips use `animate-in fade-in` for smooth transitions
+    - New state: `emptyTipIndex`, new CSS: `pulse-search` animation
+
+12. **Smooth Page Transitions (Feature 12)**: Added subtle fade-in on page load:
+    - Wrapper div starts with `opacity: 0` and transitions to `opacity: 1` over 300ms
+    - Uses `page-fade-in` and `page-loaded` CSS classes
+    - `pageLoaded` state set to true after 50ms delay
+    - Clean CSS-only animation
+
+### Bug Fix:
+- Fixed "Cannot access 'solve' before initialization" error by moving the auto-solve `useEffect` to after the `solve` function definition (same pattern used for the physical keyboard handler)
+
+### Stage Summary:
+- All 12 features (8 main + 4 UI polish) implemented in `src/app/page.tsx`
+- File grew from ~3052 to ~3535 lines (+483 lines for all new features)
+- Lint passes clean with no errors
+- Page loads successfully (HTTP 200)
+- All existing functionality preserved
+- No changes to Rust backend or API route
+- New state variables: `solveMode`, `soundEnabled`, `autoSolve`, `persistedStats`, `emptyTipIndex`, `showConfetti`, `pageLoaded`, `activeKey`
+- New interfaces: `PersistedStats`
+- New callbacks: `playKeySound`, `toggleSound`, `duplicateRow`, `moveRowUp`, `moveRowDown`
+- New memos: `autoSolveTrigger`
+- New CSS animations: `confettiFall`, `keyRipple`, `pulseSearch`, `page-fade-in`, `skip-to-content`
+- New imports: `Switch`, `Select`, `SelectContent`, `SelectItem`, `SelectTrigger`, `SelectValue`, `Volume2`, `VolumeX`, `CopyPlus`, `ArrowDown`, `Wand2`
+- localStorage keys: `sumzle-stats` (persisted stats), `sumzle-sound` (sound preference)

@@ -9,13 +9,16 @@ import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Sun, Moon, Zap, Play, Plus, Trash2, Upload, Server, Cpu,
   Activity, Timer, Gauge, Trophy, BarChart3, Copy, Check,
   ChevronDown, ChevronUp, RefreshCw, MonitorSmartphone, Network,
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
   Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
-  Undo2, Redo2, ArrowUp, GripVertical, Share2, ExternalLink, Eye
+  Undo2, Redo2, ArrowUp, ArrowDown, GripVertical, Share2, ExternalLink, Eye,
+  Volume2, VolumeX, CopyPlus, Wand2
 } from 'lucide-react'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -76,6 +79,15 @@ interface ConstraintConflict {
   type: 'hard' | 'soft'
   char: string
   message: string
+}
+
+interface PersistedStats {
+  totalSolves: number
+  avgTimeMs: number
+  fastestTimeMs: number
+  mostCommonLength: number
+  successRate: number
+  lengthCounts: Record<number, number>
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -261,6 +273,37 @@ export default function Home() {
   // Share puzzle state
   const [shareCopied, setShareCopied] = useState(false)
 
+  // Solve mode (Feature 5)
+  const [solveMode, setSolveMode] = useState<'parallel' | 'sequential'>('parallel')
+
+  // Keyboard sound feedback (Feature 6)
+  const [soundEnabled, setSoundEnabled] = useState(false)
+
+  // Auto-solve on constraint complete (Feature 8)
+  const [autoSolve, setAutoSolve] = useState(false)
+
+  // Persisted stats (Feature 3)
+  const [persistedStats, setPersistedStats] = useState<PersistedStats>({
+    totalSolves: 0,
+    avgTimeMs: 0,
+    fastestTimeMs: Infinity,
+    mostCommonLength: 0,
+    successRate: 0,
+    lengthCounts: {},
+  })
+
+  // Empty state tip index (Feature 11)
+  const [emptyTipIndex, setEmptyTipIndex] = useState(0)
+
+  // Confetti state (Feature 4)
+  const [showConfetti, setShowConfetti] = useState(false)
+
+  // Page loaded for fade-in (Feature 12)
+  const [pageLoaded, setPageLoaded] = useState(false)
+
+  // Keyboard active key for ripple (Feature 10)
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+
   // Mobile keyboard auto-open
   const mobileInputRef = useRef<HTMLInputElement>(null)
 
@@ -395,6 +438,169 @@ export default function Home() {
     window.addEventListener('scroll', handleScroll, { passive: true })
     return () => window.removeEventListener('scroll', handleScroll)
   }, [])
+
+  // ─── Load persisted stats from localStorage ────────────────────────────────
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('sumzle-stats')
+      if (stored) {
+        const parsed = JSON.parse(stored) as PersistedStats
+        setPersistedStats(parsed)
+      }
+    } catch { /* private browsing mode */ }
+  }, [])
+
+  // ─── Load sound preference from localStorage ───────────────────────────────
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('sumzle-sound')
+      if (stored === 'true') setSoundEnabled(true)
+    } catch { /* private browsing mode */ }
+  }, [])
+
+  // ─── Page load fade-in ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPageLoaded(true), 50)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // ─── Empty tips rotation ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (solveResult || solving) return
+    const timer = setInterval(() => {
+      setEmptyTipIndex(prev => (prev + 1) % 3)
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [solveResult, solving])
+
+  // ─── Confetti trigger ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (solveResult && solveResult.results.length === 1) {
+      setShowConfetti(true)
+      const timer = setTimeout(() => setShowConfetti(false), 4000)
+      return () => clearTimeout(timer)
+    }
+    setShowConfetti(false)
+  }, [solveResult])
+
+  // ─── Update persisted stats when solve completes ───────────────────────────
+
+  useEffect(() => {
+    if (solveResult && !solving) {
+      setPersistedStats(prev => {
+        const newTotal = prev.totalSolves + 1
+        const newAvgTime = prev.totalSolves === 0
+          ? solveResult.elapsed_ms
+          : (prev.avgTimeMs * prev.totalSolves + solveResult.elapsed_ms) / newTotal
+        const newFastest = Math.min(prev.fastestTimeMs, solveResult.elapsed_ms)
+        const newLengthCounts = { ...prev.lengthCounts }
+        newLengthCounts[expressionLength] = (newLengthCounts[expressionLength] || 0) + 1
+        const mostCommon = Object.entries(newLengthCounts).sort((a, b) => b[1] - a[1])[0]?.[0]
+        const successRate = prev.totalSolves === 0
+          ? (solveResult.results.length > 0 ? 100 : 0)
+          : ((prev.successRate * prev.totalSolves / 100) + (solveResult.results.length > 0 ? 1 : 0)) / newTotal * 100
+
+        const updated: PersistedStats = {
+          totalSolves: newTotal,
+          avgTimeMs: newAvgTime,
+          fastestTimeMs: newFastest,
+          mostCommonLength: parseInt(mostCommon || '0'),
+          successRate,
+          lengthCounts: newLengthCounts,
+        }
+        try { localStorage.setItem('sumzle-stats', JSON.stringify(updated)) } catch { /* */ }
+        return updated
+      })
+    }
+  }, [solveResult, solving, expressionLength])
+
+  // ─── Keyboard sound feedback (Feature 6) ──────────────────────────────────
+
+  const playKeySound = useCallback(() => {
+    if (!soundEnabled) return
+    try {
+      const ctx = new AudioContext()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.type = 'sine'
+      osc.frequency.value = 800 + Math.random() * 200
+      gain.gain.value = 0.03
+      osc.start()
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05)
+      osc.stop(ctx.currentTime + 0.05)
+    } catch { /* audio not available */ }
+  }, [soundEnabled])
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled(prev => {
+      const next = !prev
+      try { localStorage.setItem('sumzle-sound', String(next)) } catch { /* */ }
+      return next
+    })
+  }, [])
+
+  // ─── Auto-solve on constraint complete (Feature 8) ─────────────────────────
+
+  const autoSolveTrigger = useMemo(() => {
+    if (!autoSolve || solving) return false
+    return rows.some(row => {
+      const allFilled = row.every(t => t.char !== '')
+      const hasNonEmptyState = row.some(t => t.state !== 'empty')
+      return allFilled && hasNonEmptyState
+    })
+  }, [rows, autoSolve, solving])
+
+  // auto-solve useEffect is defined after the solve function to avoid hoisting issues
+
+  // ─── Duplicate row (Feature 2) ─────────────────────────────────────────────
+
+  const duplicateRow = useCallback((index: number) => {
+    setRows(prev => {
+      if (prev.length >= MAX_ROWS) return prev
+      const updated = [...prev]
+      const newRow = prev[index].map(t => ({ ...t }))
+      updated.splice(index + 1, 0, newRow)
+      pushHistory(updated)
+      return updated
+    })
+  }, [pushHistory])
+
+  // ─── Move row up/down (Feature 2) ──────────────────────────────────────────
+
+  const moveRowUp = useCallback((index: number) => {
+    if (index <= 0) return
+    setRows(prev => {
+      const updated = [...prev]
+      ;[updated[index - 1], updated[index]] = [updated[index], updated[index - 1]]
+      pushHistory(updated)
+      return updated
+    })
+    if (selectedCell) {
+      if (selectedCell.row === index) setSelectedCell({ row: index - 1, col: selectedCell.col })
+      else if (selectedCell.row === index - 1) setSelectedCell({ row: index, col: selectedCell.col })
+    }
+  }, [pushHistory, selectedCell])
+
+  const moveRowDown = useCallback((index: number) => {
+    if (index >= rows.length - 1) return
+    setRows(prev => {
+      const updated = [...prev]
+      ;[updated[index], updated[index + 1]] = [updated[index + 1], updated[index]]
+      pushHistory(updated)
+      return updated
+    })
+    if (selectedCell) {
+      if (selectedCell.row === index) setSelectedCell({ row: index + 1, col: selectedCell.col })
+      else if (selectedCell.row === index + 1) setSelectedCell({ row: index, col: selectedCell.col })
+    }
+  }, [pushHistory, selectedCell, rows.length])
 
   // ─── Fetch health ──────────────────────────────────────────────────────────
 
@@ -561,6 +767,12 @@ export default function Home() {
   const handleKeyPress = useCallback((key: string) => {
     if (!selectedCell) return
 
+    playKeySound()
+
+    // Ripple effect for keyboard keys
+    setActiveKey(key)
+    setTimeout(() => setActiveKey(null), 300)
+
     if (key === '\u232b') {
       const { row, col } = selectedCell
       setChar(row, col, '')
@@ -575,7 +787,7 @@ export default function Home() {
     if (col < expressionLength - 1) {
       setSelectedCell({ row, col: col + 1 })
     }
-  }, [selectedCell, expressionLength, setChar])
+  }, [selectedCell, expressionLength, setChar, playKeySound])
 
   // ─── Solve ─────────────────────────────────────────────────────────────────
 
@@ -597,7 +809,7 @@ export default function Home() {
       const body: Record<string, unknown> = {
         length: expressionLength,
         rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
-        mode: 'parallel',
+        mode: solveMode,
         num_threads: health?.parallel_threads || undefined,
         max_results: MAX_RESULTS_SAFE_CAP,
       }
@@ -609,7 +821,8 @@ export default function Home() {
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
-          res = await fetch('/api/solve/parallel', {
+          const endpoint = solveMode === 'sequential' ? '/api/solve/local' : '/api/solve/parallel'
+          res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -712,7 +925,15 @@ export default function Home() {
     } finally {
       setSolving(false)
     }
-  }, [rows, expressionLength, health])
+  }, [rows, expressionLength, health, solveMode])
+
+  // ─── Auto-solve effect (defined after solve to avoid hoisting issues) ────────
+
+  useEffect(() => {
+    if (autoSolveTrigger && !solving) {
+      solve()
+    }
+  }, [autoSolveTrigger, solving, solve])
 
   // ─── Reset Solver ────────────────────────────────────────────────────────
 
@@ -1391,7 +1612,7 @@ export default function Home() {
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300 dark:[background-image:radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.03),transparent_75%)]">
+    <div className={`min-h-screen flex flex-col bg-zinc-50 dark:bg-zinc-950 transition-colors duration-300 dark:[background-image:radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.03),transparent_75%)] page-fade-in ${pageLoaded ? 'page-loaded' : ''}`}>
       <style>{`
         @keyframes shimmer {
           0% { background-position: 200% 0; }
@@ -1505,7 +1726,71 @@ export default function Home() {
         .tile-press:active {
           transform: scale(0.92);
         }
+        /* Confetti animation (Feature 4) */
+        @keyframes confettiFall {
+          0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(200px) rotate(720deg); opacity: 0; }
+        }
+        .confetti-particle {
+          position: absolute;
+          animation: confettiFall 2.5s ease-out forwards;
+          pointer-events: none;
+        }
+        /* Keyboard ripple effect (Feature 10) */
+        @keyframes keyRipple {
+          0% { transform: scale(0); opacity: 0.5; }
+          100% { transform: scale(2.5); opacity: 0; }
+        }
+        .key-ripple::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          background: rgba(16, 185, 129, 0.3);
+          animation: keyRipple 0.3s ease-out;
+          pointer-events: none;
+        }
+        /* Tile hover preview (Feature 9) */
+        .tile-hover-preview:hover .tile-preview-indicator {
+          opacity: 1;
+        }
+        /* Page fade-in (Feature 12) */
+        .page-fade-in {
+          opacity: 0;
+          transition: opacity 300ms ease-out;
+        }
+        .page-fade-in.page-loaded {
+          opacity: 1;
+        }
+        /* Pulsing search animation for empty state (Feature 11) */
+        @keyframes pulseSearch {
+          0%, 100% { transform: scale(1); opacity: 0.5; }
+          50% { transform: scale(1.1); opacity: 0.8; }
+        }
+        .pulse-search {
+          animation: pulseSearch 2s ease-in-out infinite;
+        }
+        /* Skip to content link (Feature 7) */
+        .skip-to-content {
+          position: absolute;
+          top: -100px;
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 9999;
+          padding: 8px 16px;
+          background: rgb(16, 185, 129);
+          color: white;
+          border-radius: 0 0 8px 8px;
+          font-size: 14px;
+          font-weight: 600;
+          transition: top 0.2s;
+        }
+        .skip-to-content:focus {
+          top: 0;
+        }
       `}</style>
+      {/* Skip to content link (Feature 7) */}
+      <a href="#main-content" className="skip-to-content">Skip to content</a>
       {/* ─── Header ──────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -1570,7 +1855,7 @@ export default function Home() {
       </header>
 
       {/* ─── Main Content ────────────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+      <main id="main-content" className="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
           {/* ─── LEFT PANEL: Input ──────────────────────────────────────────── */}
@@ -1638,6 +1923,24 @@ export default function Home() {
                       +
                     </Button>
                   </div>
+                </div>
+                {/* Quick-Select Length Buttons (Feature 1) */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-zinc-400 mr-1">Quick:</span>
+                  {[3, 5, 6, 7, 8].map(len => (
+                    <button
+                      key={len}
+                      className={`h-7 min-w-[28px] px-2 rounded-full text-xs font-bold transition-all duration-150 focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                        expressionLength === len
+                          ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/30 hover:text-emerald-600 dark:hover:text-emerald-400'
+                      }`}
+                      onClick={() => handleLengthChange(String(len))}
+                      aria-label={`Set expression length to ${len}`}
+                    >
+                      {len}
+                    </button>
+                  ))}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outline" size="sm" onClick={addRow} disabled={rows.length >= MAX_ROWS || solving} className="focus-visible:ring-2 focus-visible:ring-emerald-500" title="Add a new constraint row">
@@ -1922,7 +2225,7 @@ export default function Home() {
                 </div>
 
                 {/* Rows */}
-                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1" ref={boardRef}>
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1" ref={boardRef} role="grid" aria-label="Constraint board">
                   {rows.map((row, rowIdx) => (
                     <div
                       key={rowIdx}
@@ -1974,15 +2277,28 @@ export default function Home() {
                                 ${isPopping ? 'scale-110' : ''}
                                 ${isFlipping ? 'tile-flip' : ''}
                                 ${isRecommended ? 'tile-glow' : ''}
-                                hover:scale-105 active:scale-95 tile-press
+                                hover:scale-105 active:scale-95 tile-press tile-hover-preview
                               `}
                               style={{ perspective: '400px', transformStyle: 'preserve-3d' }}
                               onClick={(e) => handleTileClick(rowIdx, colIdx, e)}
                               onContextMenu={(e) => handleTileContextMenu(e, rowIdx, colIdx)}
                               title={`Position ${colIdx + 1}`}
+                              role="gridcell"
+                              aria-roledescription="puzzle tile"
                               aria-label={`Row ${rowIdx + 1} Column ${colIdx + 1}: ${tile.char || 'empty'}, ${tile.state}`}
                             >
                               {tile.char ? (API_TO_DISPLAY[tile.char] || tile.char) : ''}
+                              {/* Tile hover preview indicator (Feature 9) */}
+                              {tile.char && (
+                                <span className="tile-preview-indicator absolute bottom-0.5 right-0.5 opacity-0 transition-opacity duration-150 pointer-events-none" aria-hidden="true">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${
+                                    tile.state === 'correct' ? 'bg-amber-400' :
+                                    tile.state === 'present' ? 'bg-zinc-400' :
+                                    tile.state === 'absent' ? 'bg-emerald-500' :
+                                    ''
+                                  }`} />
+                                </span>
+                              )}
                               {/* Absent tile watermark */}
                               {isAbsent && (
                                 <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold opacity-[0.08] pointer-events-none select-none" aria-hidden="true">
@@ -2005,6 +2321,36 @@ export default function Home() {
                           title="Clear row"
                         >
                           <RefreshCw className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => duplicateRow(rowIdx)}
+                          disabled={rows.length >= MAX_ROWS}
+                          title="Duplicate row"
+                        >
+                          <CopyPlus className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => moveRowUp(rowIdx)}
+                          disabled={rowIdx === 0}
+                          title="Move row up"
+                        >
+                          <ArrowUp className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          onClick={() => moveRowDown(rowIdx)}
+                          disabled={rowIdx === rows.length - 1}
+                          title="Move row down"
+                        >
+                          <ArrowDown className="w-3 h-3" />
                         </Button>
                         {rows.length > 1 && (
                           <Button
@@ -2096,15 +2442,28 @@ export default function Home() {
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
-                    onClick={() => setShowShortcuts(!showShortcuts)}
-                    title="Keyboard shortcuts"
-                  >
-                    <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
-                  </Button>
+                  <div className="flex items-center gap-1.5">
+                    {/* Sound toggle (Feature 6) */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={toggleSound}
+                      title={soundEnabled ? 'Mute key sounds' : 'Enable key sounds'}
+                      aria-label={soundEnabled ? 'Mute key sounds' : 'Enable key sounds'}
+                    >
+                      {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-500" /> : <VolumeX className="w-3.5 h-3.5 text-zinc-400" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      onClick={() => setShowShortcuts(!showShortcuts)}
+                      title="Keyboard shortcuts"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
+                    </Button>
+                  </div>
                 </div>
                 {showShortcuts && (
                   <div className="mb-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-600 dark:text-zinc-400 animate-in slide-in-from-top-1 duration-150 space-y-1">
@@ -2131,9 +2490,10 @@ export default function Home() {
                             variant="outline"
                             size="sm"
                             className={`
-                              h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500
+                              h-9 w-9 sm:h-10 sm:w-10 font-mono font-bold text-sm p-0 transition-all duration-100 focus-visible:ring-2 focus-visible:ring-emerald-500 relative overflow-hidden
                               ${key === '\u232b' ? 'bg-zinc-100 dark:bg-zinc-800 col-span-1' : ''}
                               ${stateClass}
+                              ${activeKey === key ? 'key-ripple' : ''}
                               ${selectedCell
                                 ? 'hover:bg-emerald-50 hover:border-emerald-300 dark:hover:bg-emerald-950 dark:hover:border-emerald-700 active:scale-90 active:bg-emerald-100 dark:active:bg-emerald-900'
                                 : 'opacity-50'
@@ -2221,7 +2581,33 @@ export default function Home() {
               </div>
             )}
 
-            {/* Solve Button - with gradient border effect + shortcut badge */}
+            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">Mode:</span>
+                <Select value={solveMode} onValueChange={(v: string) => setSolveMode(v as 'parallel' | 'sequential')}>
+                  <SelectTrigger className="h-7 text-xs w-[130px]" size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="parallel">Parallel (multi-core)</SelectItem>
+                    <SelectItem value="sequential">Sequential (debug)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">Auto-solve</span>
+                <Switch
+                  checked={autoSolve}
+                  onCheckedChange={setAutoSolve}
+                  aria-label="Auto-solve when constraints complete"
+                  className="data-[state=checked]:bg-emerald-500"
+                />
+                <Wand2 className={`w-3.5 h-3.5 ${autoSolve ? 'text-emerald-500' : 'text-zinc-300 dark:text-zinc-600'}`} />
+              </div>
+            </div>
+
+            {/* Solve Button - with gradient border effect + shortcut badge + mode badge */}
             <div className="relative group lg:static sticky bottom-4 z-40">
               <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 rounded-xl opacity-60 group-hover:opacity-100 blur-sm transition-opacity duration-300 bg-[length:200%_100%] animate-[shimmer_3s_ease-in-out_infinite]" />
               <Button
@@ -2240,6 +2626,9 @@ export default function Home() {
                     <Play className="w-5 h-5 mr-2" />
                     Solve with Rust Engine
                     <span className="ml-2 text-xs opacity-70 font-normal hidden sm:inline">{'\u2318\u21b5'}</span>
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-emerald-300 text-emerald-600 dark:border-emerald-700 dark:text-emerald-400 hidden sm:inline-flex">
+                      {solveMode === 'parallel' ? 'Multi' : 'Seq'}
+                    </Badge>
                   </>
                 )}
               </Button>
@@ -2261,8 +2650,45 @@ export default function Home() {
           {/* ─── RIGHT PANEL: Results ──────────────────────────────────────── */}
           <div className="space-y-4" ref={resultsRef}>
 
+            {/* Empty State Enhancement (Feature 11) */}
+            {!solveResult && !solving && !solveError && (
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
+                <CardContent className="pt-8 pb-8">
+                  <div className="text-center space-y-4">
+                    {/* Animated illustration */}
+                    <div className="relative inline-flex items-center justify-center">
+                      <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-emerald-100 to-teal-100 dark:from-emerald-950/40 dark:to-teal-950/40 flex items-center justify-center pulse-search">
+                        <Search className="w-10 h-10 text-emerald-500/60 dark:text-emerald-400/60" />
+                      </div>
+                      <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-amber-100 dark:bg-amber-950/40 flex items-center justify-center">
+                        <span className="text-xs font-bold text-amber-500">?</span>
+                      </div>
+                    </div>
+                    {/* Rotating tips */}
+                    <div className="min-h-[40px] flex items-center justify-center">
+                      {emptyTipIndex === 0 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Enter constraints and hit <strong className="text-emerald-600 dark:text-emerald-400">Solve</strong>!
+                        </p>
+                      )}
+                      {emptyTipIndex === 1 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Try the <strong className="text-emerald-600 dark:text-emerald-400">1+1=2</strong> preset to get started
+                        </p>
+                      )}
+                      {emptyTipIndex === 2 && (
+                        <p className="text-sm text-zinc-600 dark:text-zinc-400 animate-in fade-in duration-300">
+                          Use keyboard shortcuts: <kbd className="px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 rounded text-xs font-mono">Ctrl+Enter</kbd> to solve
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Stats Card */}
-            {(solveResult || health) && (
+            {(solveResult || health || persistedStats.totalSolves > 0) && (
               <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -2301,6 +2727,42 @@ export default function Home() {
                       </>
                     )}
                   </div>
+                  {/* Comprehensive Stats Dashboard (Feature 3) */}
+                  {persistedStats.totalSolves > 0 && (
+                    <div className="mt-3">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Your Stats</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                        <div className="text-center p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50">
+                          <Hash className="w-3 h-3 mx-auto mb-0.5 text-emerald-500" />
+                          <div className="text-sm font-bold text-emerald-700 dark:text-emerald-400">{persistedStats.totalSolves}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Solves</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/50">
+                          <Timer className="w-3 h-3 mx-auto mb-0.5 text-amber-500" />
+                          <div className="text-sm font-bold text-amber-700 dark:text-amber-400">{persistedStats.avgTimeMs < 1000 ? `${persistedStats.avgTimeMs.toFixed(0)}ms` : `${(persistedStats.avgTimeMs / 1000).toFixed(1)}s`}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Avg Time</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-teal-50 dark:bg-teal-950/20 border border-teal-100 dark:border-teal-900/50">
+                          <Sparkles className="w-3 h-3 mx-auto mb-0.5 text-teal-500" />
+                          <div className="text-sm font-bold text-teal-700 dark:text-teal-400">{persistedStats.fastestTimeMs < Infinity ? (persistedStats.fastestTimeMs < 1000 ? `${persistedStats.fastestTimeMs.toFixed(0)}ms` : `${(persistedStats.fastestTimeMs / 1000).toFixed(1)}s`) : '-'}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Fastest</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-cyan-50 dark:bg-cyan-950/20 border border-cyan-100 dark:border-cyan-900/50">
+                          <Target className="w-3 h-3 mx-auto mb-0.5 text-cyan-500" />
+                          <div className="text-sm font-bold text-cyan-700 dark:text-cyan-400">{persistedStats.mostCommonLength || '-'}</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Common Len</div>
+                        </div>
+                        <div className="text-center p-2 rounded-lg bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/50">
+                          <TrendingUp className="w-3 h-3 mx-auto mb-0.5 text-rose-500" />
+                          <div className="text-sm font-bold text-rose-700 dark:text-rose-400">{persistedStats.successRate.toFixed(0)}%</div>
+                          <div className="text-[9px] text-zinc-500 uppercase">Success</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {solveResult && (
                     <>
                       {/* Speed gauge */}
@@ -2392,11 +2854,11 @@ export default function Home() {
                     <span className="text-sm font-medium">Rust engine solving... {(solveTimerMs / 1000).toFixed(1)}s</span>
                   </div>
                   {/* Animated shimmer progress bar */}
-                  <div className="h-3 rounded-full bg-gradient-to-r from-emerald-200 via-teal-200 to-cyan-200 dark:from-emerald-900 dark:via-teal-900 dark:to-cyan-900 progress-shimmer">
+                  <div className="h-3 rounded-full bg-gradient-to-r from-emerald-200 via-teal-200 to-cyan-200 dark:from-emerald-900 dark:via-teal-900 dark:to-cyan-900 progress-shimmer" role="progressbar" aria-label="Solve progress" aria-valuetext={`Solving for ${(solveTimerMs / 1000).toFixed(1)} seconds`}>
                     <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 transition-all duration-300" style={{ width: '100%' }} />
                   </div>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Parallel search across {health?.parallel_threads || 4} threads
+                    {solveMode === 'parallel' ? `Parallel search across ${health?.parallel_threads || 4} threads` : 'Sequential single-core search (debug mode)'}
                   </p>
                 </CardContent>
               </Card>
@@ -2404,7 +2866,28 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
+              <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80 relative overflow-hidden">
+                {/* Confetti (Feature 4) */}
+                {showConfetti && solveResult.results.length === 1 && (
+                  <div className="absolute inset-0 pointer-events-none z-10" aria-hidden="true">
+                    {Array.from({ length: 30 }, (_, i) => (
+                      <div
+                        key={i}
+                        className="confetti-particle"
+                        style={{
+                          left: `${Math.random() * 100}%`,
+                          top: '-10px',
+                          animationDelay: `${Math.random() * 1.5}s`,
+                          animationDuration: `${2 + Math.random() * 2}s`,
+                          width: `${4 + Math.random() * 6}px`,
+                          height: `${4 + Math.random() * 6}px`,
+                          borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+                          backgroundColor: ['#10b981', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'][Math.floor(Math.random() * 7)],
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
                 <CardHeader className="pb-3">
                   <div className="flex items-center gap-2">
                     <Trophy className="w-4 h-4 text-amber-500" />
@@ -2470,7 +2953,7 @@ export default function Home() {
                       <TabsTrigger value="recommended" className="flex-1">Best</TabsTrigger>
                     </TabsList>
 
-                    <TabsContent value="solutions">
+                    <TabsContent value="solutions" aria-live="polite">
                       {/* Unique solution banner */}
                       {solveResult.results.length === 1 && (
                         <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 border border-emerald-200 dark:border-emerald-800 text-center animate-in zoom-in-50 duration-300">
