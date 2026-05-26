@@ -1,9 +1,9 @@
 # Sumzle HP Solver - Project Worklog
 
 ## Project Status
-- **Phase**: Feature-Complete with Enhanced UI + Robust Error Handling
+- **Phase**: Feature-Complete with Enhanced UI + Robust Error Handling + Drag & Drop + Share + Visualizer
 - **Overall Status**: Stable and functional - Rust solver + Next.js frontend + auto-restart proxy + watchdog
-- **Last Updated**: Task ID 11 (2025-05-25)
+- **Last Updated**: Task ID 14 (2025-05-26)
 
 ## Task ID: 1
 **Agent**: Main Coordinator
@@ -893,3 +893,107 @@ Unresolved Issues / Risks:
 - CI now includes comprehensive build tests on all 3 major OSes + Linux ARM64 cross-build + integration tests
 - Build workflow supports 6 platforms: Windows x64/ARM64, macOS Intel/ARM, Linux x64/ARM64
 - All CI jobs passing ✅
+
+## Task ID: 14
+**Agent**: Full-Stack Developer
+**Task**: Enhance Sumzle HP Solver Frontend with New Features and UI Polish
+
+### Work Log:
+1. **Drag & Drop Row Reordering (Feature 1)**: Implemented HTML5 drag-and-drop for constraint rows:
+   - Added `GripVertical` drag handle icon to the left of each row number
+   - Added `dragOverRow` and `dragSourceRow` state for tracking drag position
+   - Visual indicator: green border on top/bottom of drop target row
+   - Dragging row becomes semi-transparent (opacity 0.5)
+   - Handles selected cell position updates when rows are reordered
+   - `pushHistory()` called on reorder for undo support
+   - CSS classes: `drag-over-top`, `drag-over-bottom`, `dragging`
+
+2. **Share Puzzle via URL (Feature 2)**: Added "Share" button next to Export:
+   - Encodes current puzzle state (length + rows with chars/states) as base64 in `?p=` URL query parameter
+   - On page load, `useEffect` checks for `?p=` parameter and auto-loads the puzzle
+   - After loading, cleans the URL via `history.replaceState`
+   - Button shows "Link Copied!" feedback for 2 seconds
+   - `sharePuzzle` callback and `shareCopied` state
+   - New import: `Share2`
+
+3. **Animated Solve Progress Bar (Feature 3)**: Replaced the basic `<Progress>` bar with animated shimmer progress bar:
+   - Custom `progressShimmer` CSS keyframe animation (translateX -100% to 100%)
+   - Gradient bar with emerald → teal → cyan colors
+   - Pseudo-element shimmer overlay with 1.5s infinite animation
+   - `.progress-shimmer` CSS class with `::after` pseudo-element
+
+4. **Result Expression Visualizer (Feature 4)**: Added visual expression breakdown when clicking results:
+   - Eye icon button per result, plus clicking the expression text toggles visualization
+   - Splits expression at `=` or `>` separator into left/right groups
+   - Color-coded tiles: digits (emerald), operators (amber), symbols (zinc)
+   - Large separator display between groups
+   - Legend showing Digits/Operators/Symbols categories
+   - Dismissible card with X button
+   - `selectedResultExpr` state and `visualizeExpression` useMemo
+   - New import: `Eye`
+
+5. **Constraint Board Row Numbering (Feature 5)**: Enhanced existing row numbers:
+   - Changed from plain text to `font-medium` weight for better visibility
+   - Row numbers now appear next to drag handle (grip icon + number + tiles)
+
+6. **Enhanced Footer with Link (Feature 6)**: Updated footer with:
+   - Version number: "Sumzle HP Solver v2.1.0" using `APP_VERSION` constant
+   - Rust branding: "Powered by Rust 🦀" emoji
+   - GitHub link to https://github.com/SUSTechHSAS/sumzle-hp-solver with ExternalLink icon
+   - Green link color with hover underline
+   - New import: `ExternalLink`, new constant: `APP_VERSION = '2.1.0'`
+
+7. **Mobile Keyboard Auto-Open (Feature 7)**: Added hidden input for mobile keyboard:
+   - `mobileInputRef` pointing to a hidden input (`type="text"`, `inputMode="none"`)
+   - `useEffect` that focuses the hidden input when `selectedCell` changes
+   - `preventScroll: true` to avoid jarring scroll on focus
+   - Input is zero-size and invisible (absolute positioned, w-0 h-0 opacity-0)
+
+8. **Result Count Estimation (Feature 8)**: Added pre-solve result count estimate:
+   - `estimatedResultCount` useMemo computes density-based heuristic
+   - Formula: (correctCount * 3 + presentCount * 1) / totalTiles
+   - Ranges: ~1-10, ~10-100, ~100-1K, ~1K-10K, ~10K-100K, ~100K+
+   - Subtle display with Hash icon near the solve button
+   - Only shown when constraints exist and not currently solving
+
+9. **Better Card Section Dividers (UI Polish 9)**: Enhanced gradient dividers:
+   - Changed from `via-emerald-500/30` to `via-emerald-500/40` for more visibility
+   - Changed from `via-zinc-200 dark:via-zinc-700` to `via-zinc-300 dark:via-zinc-600`
+   - Consistent `via-teal-500/40` for teal dividers
+
+10. **Keyboard Row Backgrounds (UI Polish 10)**: Added subtle background panels:
+    - Each keyboard row wrapped in `p-1.5 rounded-lg` container
+    - `bg-zinc-50/50 dark:bg-zinc-800/30` subtle background
+    - `border border-zinc-100 dark:border-zinc-800/50` subtle border
+
+11. **Tile Press Effect (UI Polish 11)**: Added `tile-press` CSS class:
+    - Custom `:active` pseudo-class with `transform: scale(0.92)`
+    - Applied alongside existing `active:scale-95` Tailwind class
+    - CSS `.tile-press:active` rule in style tag
+
+12. **Tooltip Improvements (UI Polish 12)**: Added descriptive `title` attributes:
+    - Theme toggle: "Toggle theme"
+    - Add Row: "Add a new constraint row"
+    - Import: "Import puzzle from JSON"
+    - Export: "Copy game state as JSON to clipboard"
+    - Share: "Share puzzle via URL link"
+    - Workers: "Manage distributed worker nodes"
+    - History: "View recent solve history"
+    - Clear: "Clear all constraints and reset"
+    - Result copy: "Copy expression to clipboard"
+    - Eye button: "Visualize expression breakdown"
+    - Drag handle: "Drag to reorder row"
+
+### Stage Summary:
+- All 12 requested features and UI polish items implemented in `src/app/page.tsx`
+- File grew from ~2687 to ~3052 lines
+- Lint passes clean with no errors
+- All existing functionality preserved
+- No changes to Rust backend or API route
+- New state variables: `dragOverRow`, `dragSourceRow`, `selectedResultExpr`, `shareCopied`, `mobileInputRef`
+- New memos: `estimatedResultCount`, `visualizeExpression`
+- New callbacks: `handleDragStart`, `handleDragOver`, `handleDragEnd`, `sharePuzzle`
+- New imports: `GripVertical`, `Share2`, `ExternalLink`, `Eye`
+- New constants: `APP_VERSION = '2.1.0'`
+- New CSS: `progressShimmer` keyframe, `.progress-shimmer`, `.drag-over-top`, `.drag-over-bottom`, `.dragging`, `.tile-press`
+- New effects: URL puzzle loading on mount, mobile keyboard auto-focus
