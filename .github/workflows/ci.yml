@@ -1,4 +1,4 @@
-name: CI - Test & Lint
+name: CI - Test & Build
 
 on:
   push:
@@ -7,9 +7,7 @@ on:
     branches: [main]
 
 env:
-  NODE_VERSION: "20"
-  RUST_VERSION: "stable"
-  BUN_VERSION: "1"
+  CARGO_TERM_COLOR: always
 
 jobs:
   # ─── Frontend Lint & Type Check ─────────────────────────────────────────
@@ -33,10 +31,20 @@ jobs:
       - name: Type check
         run: bunx tsc --noEmit --project tsconfig.json 2>&1 | grep -v "examples/" | grep -v "skills/" || true
 
-  # ─── Rust Test & Clippy ────────────────────────────────────────────────
-  rust-test:
-    name: Rust Test & Clippy
-    runs-on: ubuntu-latest
+  # ─── Rust Build & Test (native) ────────────────────────────────────────
+  rust-build-test:
+    name: Rust Build & Test - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     defaults:
       run:
         working-directory: mini-services/sumzle-solver
@@ -61,16 +69,84 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
         continue-on-error: true
 
-      - name: Build check
+      - name: Build
         run: cargo build --release
         env:
           RUST_MIN_STACK: 16777216
+
+      - name: Run tests
+        run: cargo test --release
+        env:
+          RUST_MIN_STACK: 16777216
+
+  # ─── Rust Cross-Compilation Build Test ─────────────────────────────────
+  rust-cross-build:
+    name: Rust Cross-Build - ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+          - target: x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+          - target: x86_64-pc-windows-msvc
+          - target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "mini-services/sumzle-solver -> target"
+          key: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools for Linux ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Cross-compile build check
+        working-directory: mini-services/sumzle-solver
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          RUST_MIN_STACK: 16777216
+
+  # ─── Frontend Build Test ───────────────────────────────────────────────
+  frontend-build:
+    name: Frontend Build Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: bun run db:generate
+
+      - name: Build Next.js
+        run: bun run build
+        env:
+          NEXT_PUBLIC_SOLVER_URL: ""
 
   # ─── Integration Test ──────────────────────────────────────────────────
   integration-test:
     name: Integration Test
     runs-on: ubuntu-latest
-    needs: [frontend-lint, rust-test]
+    needs: [rust-build-test]
     steps:
       - uses: actions/checkout@v4
 
@@ -98,7 +174,7 @@ jobs:
           echo "Health response: $RESPONSE"
           echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['success'], 'Health check failed'; print('Solver is healthy')"
 
-      - name: Test basic solve
+      - name: Test basic solve (1+1=2)
         run: |
           RESPONSE=$(curl -s -X POST http://127.0.0.1:3031/api/solve/parallel \
             -H "Content-Type: application/json" \
@@ -124,10 +200,24 @@ jobs:
           d = json.load(sys.stdin)
           assert d['success'], f'Solve failed: {d.get(\"error\", \"unknown\")}'
           results = d['data']['results']
-          # Should not contain '-' operator expressions
           for r in results:
             assert '-' not in r, f'Found absent operator in result: {r}'
           print(f'Absent state test passed! Found {len(results)} result(s)')
+          "
+
+      - name: Test solve with empty constraints
+        run: |
+          RESPONSE=$(curl -s -X POST http://127.0.0.1:3031/api/solve/parallel \
+            -H "Content-Type: application/json" \
+            -d '{"length":6,"rows":[],"mode":"parallel","max_results":100}')
+          echo "Empty constraints response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          assert d['success'], f'Solve failed: {d.get(\"error\", \"unknown\")}'
+          results = d['data']['results']
+          assert len(results) > 0, 'No results returned for empty constraints'
+          print(f'Empty constraints test passed! Found {len(results)} result(s)')
           "
 
       - name: Stop solver
