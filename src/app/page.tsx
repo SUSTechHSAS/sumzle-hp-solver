@@ -690,11 +690,11 @@ export default function Home() {
         setExpressionLength(parsed.length)
       }
       if (parsed.rows && Array.isArray(parsed.rows)) {
-        importedRows = parsed.rows.map((row: { char: string; state: string }[]) =>
-          row.map((tile: { char: string; state: string }) => ({
+        importedRows = (parsed.rows as { char: string; state: string }[][]).map((row) =>
+          row.map((tile) => ({
             char: API_TO_DISPLAY[tile.char] || tile.char,
-            state: (tile.state === 'empty' && tile.char !== '') ? 'absent' :
-                   (tile.state || 'empty') as TileState,
+            state: ((tile.state === 'empty' && tile.char !== '') ? 'absent' :
+                   (tile.state || 'empty')) as TileState,
           }))
         )
         setRows(importedRows)
@@ -1478,7 +1478,7 @@ export default function Home() {
             <div className="flex flex-wrap gap-1.5">
               <span className="text-xs text-zinc-500 dark:text-zinc-400 self-center mr-1">Presets:</span>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
+                const newRows: Tile[][] = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
                 setExpressionLength(5)
                 updateRowLengths(5)
                 setRows(newRows)
@@ -1489,7 +1489,7 @@ export default function Home() {
                 1+1=2
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'2',state:'present'},{char:'=',state:'correct'},{char:'3',state:'correct'},{char:'',state:'empty'}]]
+                const newRows: Tile[][] = [[{char:'1',state:'correct'},{char:'+',state:'correct'},{char:'1',state:'correct'},{char:'=',state:'correct'},{char:'2',state:'correct'}]]
                 setExpressionLength(6)
                 updateRowLengths(6)
                 setRows(newRows)
@@ -1500,7 +1500,7 @@ export default function Home() {
                 Starter Len 6
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [
+                const newRows: Tile[][] = [
                   [{char:'1',state:'correct'},{char:'2',state:'present'},{char:'+',state:'correct'},{char:'3',state:'absent'},{char:'=',state:'correct'},{char:'5',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'}],
                   [{char:'2',state:'present'},{char:'\u00d7',state:'correct'},{char:'3',state:'correct'},{char:'=',state:'correct'},{char:'6',state:'correct'},{char:'',state:'empty'},{char:'',state:'empty'},{char:'',state:'empty'}],
                 ]
@@ -1514,11 +1514,11 @@ export default function Home() {
                 Hard Mode
               </Button>
               <Button variant="outline" size="sm" className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => {
-                const newRows = [createEmptyRow(6)]
+                const clearedRows: Tile[][] = [createEmptyRow(6)]
                 setExpressionLength(6)
                 updateRowLengths(6)
-                setRows(newRows)
-                pushHistory(newRows)
+                setRows(clearedRows)
+                pushHistory(clearedRows)
                 setSelectedCell(null)
                 setSolveResult(null)
                 setSolveError(null)
