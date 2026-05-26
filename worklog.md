@@ -860,3 +860,36 @@ Unresolved Issues / Risks:
 - No unit tests for Rust code (only integration tests via API)
 - cargo fmt check is non-blocking (code not formatted to rustfmt standards)
 - Release workflow not yet tested (needs a version tag push)
+
+---
+
+## Task ID: 13
+**Agent**: Main Coordinator
+**Task**: Fix GitHub Actions build failures and enhance CI with build tests
+
+### Work Log:
+1. **Diagnosed Build & Release workflow failure**: The `aarch64-unknown-linux-gnu` (Linux ARM64) build failed because `reqwest` dependency pulls in `openssl-sys`, which requires OpenSSL dev libraries for cross-compilation.
+2. **Identified unused dependencies**: `reqwest` and `chrono` were listed in `Cargo.toml` but never imported in any source file. Removed both.
+3. **Rewrote CI workflow** (`.github/workflows/ci.yml`):
+   - Renamed from "CI - Test & Lint" to "CI - Test & Build"
+   - Added `rust-build-test` matrix job: builds and tests Rust solver on ubuntu-latest, macos-latest, windows-latest (native builds)
+   - Added `rust-cross-build-arm64` job: cross-compiles to aarch64-unknown-linux-gnu with gcc-aarch64-linux-gnu linker
+   - Added `frontend-build` job: builds Next.js frontend with bun
+   - Added `integration-test` job: starts solver, tests basic solve, absent states, and empty constraints
+   - Removed impossible cross-compile targets (Windows/macOS from Linux)
+4. **Fixed Build & Release workflow** (`.github/workflows/build.yml`):
+   - Changed macOS Intel build from `macos-13` (limited availability) to `macos-latest` with cross-compilation target `x86_64-apple-darwin`
+   - Added binary stripping for Linux builds
+   - Added source files to release artifacts
+5. **Pushed 3 commits to GitHub**:
+   - `6cef801`: Remove unused reqwest/chrono, enhance CI with build tests
+   - `137590c`: Remove impossible cross-compile targets from CI
+   - `31ae19e`: Use macos-latest for both ARM and Intel macOS builds
+6. **CI results**: All 7 CI jobs pass ✅ (Frontend Lint, Rust Build+Test x3, Cross-Build ARM64, Frontend Build, Integration Test)
+7. **Build workflow**: Triggered manually - 6 of 7 solver builds complete, macOS Intel was queued on macos-13 (now fixed to use macos-latest)
+
+### Stage Summary:
+- Critical build failure fixed: removed openssl-sys dependency
+- CI now includes comprehensive build tests on all 3 major OSes + Linux ARM64 cross-build + integration tests
+- Build workflow supports 6 platforms: Windows x64/ARM64, macOS Intel/ARM, Linux x64/ARM64
+- All CI jobs passing ✅
