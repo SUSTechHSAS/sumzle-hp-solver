@@ -18,7 +18,7 @@ import {
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
   Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
   Undo2, Redo2, ArrowUp, ArrowDown, GripVertical, Share2, ExternalLink, Eye,
-  Volume2, VolumeX, CopyPlus, Wand2
+  Volume2, VolumeX, CopyPlus, Wand2, Flame, Star, BarChart2
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -304,6 +304,17 @@ export default function Home() {
 
   // Keyboard active key for ripple (Feature 10)
   const [activeKey, setActiveKey] = useState<string | null>(null)
+
+  // Bookmark/Favorite results (Feature 6)
+  const [favoritedResults, setFavoritedResults] = useState<Set<string>>(new Set())
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
+
+  // Keyboard layout toggle (Feature 7)
+  const [keyboardLayout, setKeyboardLayout] = useState<'standard' | 'compact'>('standard')
+
+  // Benchmark mode (Feature 8)
+  const [benchmarkResult, setBenchmarkResult] = useState<{ times: number[]; speeds: number[]; avgTime: number; avgSpeed: number } | null>(null)
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false)
 
   // Mobile keyboard auto-open
   const mobileInputRef = useRef<HTMLInputElement>(null)
@@ -2648,6 +2659,16 @@ export default function Home() {
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
                   <div className="flex items-center gap-1.5">
+                    {/* Keyboard layout toggle (Feature 7) */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={`h-6 px-2 text-[10px] font-mono focus-visible:ring-2 focus-visible:ring-emerald-500 ${keyboardLayout === 'compact' ? 'text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/20' : ''}`}
+                      onClick={() => setKeyboardLayout(keyboardLayout === 'standard' ? 'compact' : 'standard')}
+                      title={keyboardLayout === 'standard' ? 'Switch to compact layout' : 'Switch to standard layout'}
+                    >
+                      {keyboardLayout === 'standard' ? 'Std' : 'Cmp'}
+                    </Button>
                     {/* Sound toggle (Feature 6) */}
                     <Button
                       variant="ghost"
@@ -2677,7 +2698,7 @@ export default function Home() {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {KEYBOARD_CHARS.map((line, lineIdx) => (
+                  {activeKeyboardLayout.map((line, lineIdx) => (
                     <div key={lineIdx} className="flex justify-center gap-1 p-1.5 rounded-lg bg-zinc-50/50 dark:bg-zinc-800/30 border border-zinc-100 dark:border-zinc-800/50">
                       {line.map((key) => {
                         const keyState = keyboardKeyStates.get(key)
@@ -2839,6 +2860,27 @@ export default function Home() {
                 )}
               </Button>
             </div>
+
+            {/* Benchmark Button (Feature 8) */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full h-9 text-xs font-medium border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950/20 focus-visible:ring-2 focus-visible:ring-amber-500"
+              onClick={handleBenchmark}
+              disabled={benchmarkRunning || solving}
+            >
+              {benchmarkRunning ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                  Benchmarking...
+                </>
+              ) : (
+                <>
+                  <Flame className="w-3.5 h-3.5 mr-1.5" />
+                  Benchmark (3x)
+                </>
+              )}
+            </Button>
 
             {/* Solve Error */}
             {solveError && (
@@ -3094,7 +3136,6 @@ export default function Home() {
                   )}
                 </CardContent>
               </Card>
-              </motion.div>
             )}
 
             {/* Solving Progress */}
@@ -3623,7 +3664,6 @@ export default function Home() {
                   </Tabs>
                 </CardContent>
               </Card>
-              </motion.div>
             )}
 
             {/* Result Expression Visualizer */}
