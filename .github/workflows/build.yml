@@ -132,22 +132,41 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Generate Prisma client
         run: bun run db:generate
 
       - name: Build Next.js
-        run: bun run build
+        run: npx next build
         env:
           NEXT_PUBLIC_SOLVER_URL: ""
+
+      - name: Prepare standalone deployment
+        run: |
+          # Copy static assets into standalone output
+          cp -r .next/static .next/standalone/.next/static 2>/dev/null || true
+          # Copy public assets into standalone output
+          cp -r public .next/standalone/public 2>/dev/null || true
+          # Copy package.json for reference
+          cp package.json .next/standalone/package.json
+          # Verify output
+          echo "=== Standalone output structure ==="
+          ls -la .next/standalone/
+          echo "=== .next/standalone/.next/ ==="
+          ls -la .next/standalone/.next/
+          echo "=== Total size ==="
+          du -sh .next/standalone/
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
-          path: .next/
+          path: |
+            .next/standalone/
+            .next/static/
           retention-days: 30
+          if-no-files-found: error
 
   # ─── Create GitHub Release ───────────────────────────────────────────
   create-release:
@@ -186,7 +205,9 @@ jobs:
             fi
           done
 
-          # Package frontend
+          # Package frontend (standalone output)
+          echo "Packaging frontend..."
+          ls -la artifacts/frontend-dist/ || echo "frontend-dist not found"
           tar -czf release/frontend-dist.tar.gz -C artifacts/frontend-dist/ .
 
           ls -la release/
@@ -212,8 +233,9 @@ jobs:
             1. Download the solver binary for your platform
             2. Download the frontend distribution (`frontend-dist.tar.gz`)
             3. Start the solver: `RUST_MIN_STACK=16777216 ./sumzle-solver`
-            4. Start the frontend: `bun run start`
-            5. Open http://localhost:3000
+            4. Extract frontend: `tar -xzf frontend-dist.tar.gz`
+            5. Start the frontend: `node server.js` (or `bun .next/standalone/server.js`)
+            6. Open http://localhost:3000
 
             ### What's New
             - High-performance Rust solver engine

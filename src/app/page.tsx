@@ -18,8 +18,9 @@ import {
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
   Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
   Undo2, Redo2, ArrowUp, ArrowDown, GripVertical, Share2, ExternalLink, Eye,
-  Volume2, VolumeX, CopyPlus, Wand2
+  Volume2, VolumeX, CopyPlus, Wand2, Star, Flame, BarChart2
 } from 'lucide-react'
+import { motion } from 'framer-motion'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -303,6 +304,25 @@ export default function Home() {
 
   // Keyboard active key for ripple (Feature 10)
   const [activeKey, setActiveKey] = useState<string | null>(null)
+
+  // Keyboard layout toggle (standard/compact)
+  const [keyboardLayout, setKeyboardLayout] = useState<'standard' | 'compact'>('standard')
+
+  // Favorited results (Task 15 - Feature 6)
+  const [favoritedResults, setFavoritedResults] = useState<Set<string>>(new Set())
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
+
+  // Benchmark mode (Task 15 - Feature 8)
+  const [benchmarkResult, setBenchmarkResult] = useState<{
+    times: number[]
+    speeds: number[]
+    avgTime: number
+    avgSpeed: number
+  } | null>(null)
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false)
+
+  // Hovered result for breakdown tooltip (Task 15 - Feature 5)
+  const [hoveredResult, setHoveredResult] = useState<string | null>(null)
 
   // Mobile keyboard auto-open
   const mobileInputRef = useRef<HTMLInputElement>(null)
@@ -1254,6 +1274,10 @@ export default function Home() {
   const filteredResults = useMemo(() => {
     if (!solveResult) return []
     let results = solveResult.results
+    // Filter by favorites if enabled
+    if (showFavoritesOnly && favoritedResults.size > 0) {
+      results = results.filter(expr => favoritedResults.has(expr))
+    }
     if (resultFilter.trim()) {
       const lowerFilter = resultFilter.toLowerCase().replace(/\u00d7/g, '*').replace(/\u00f7/g, '/')
       results = results.filter(expr =>
@@ -1273,7 +1297,7 @@ export default function Home() {
       default:
         return results
     }
-  }, [solveResult, resultFilter, resultSort])
+  }, [solveResult, resultFilter, resultSort, showFavoritesOnly, favoritedResults])
 
   // ─── Constraint Summary ────────────────────────────────────────────────────
 
@@ -1609,6 +1633,189 @@ export default function Home() {
     }))
   }, [solveHistory])
 
+  // ─── Compact keyboard layout ──────────────────────────────────────────────
+
+  const COMPACT_KEYBOARD_CHARS = [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['+', '-', '\u00d7', '\u00f7', '=', '\u232b'],
+  ]
+
+  const activeKeyboardLayout = keyboardLayout === 'compact' ? COMPACT_KEYBOARD_CHARS : KEYBOARD_CHARS
+
+  // ─── Puzzle Difficulty Indicator (Task 15 - Feature 2) ───────────────────
+
+  const puzzleDifficulty = useMemo((): { level: string; color: string; bgClass: string } => {
+    const correctCount = rows.reduce((acc, row) => acc + row.filter(t => t.state === 'correct').length, 0)
+    const presentCount = rows.reduce((acc, row) => acc + row.filter(t => t.state === 'present').length, 0)
+    const absentCount = rows.reduce((acc, row) => acc + row.filter(t => t.state === 'absent').length, 0)
+    const hasConstraints = rows.some(row => row.some(t => t.char !== ''))
+
+    if (correctCount >= 3) return { level: 'Easy', color: 'text-emerald-700 dark:text-emerald-400', bgClass: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700' }
+    if (correctCount >= 1 && (presentCount > 0 || absentCount > 0)) return { level: 'Medium', color: 'text-amber-700 dark:text-amber-400', bgClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border-amber-300 dark:border-amber-700' }
+    if (hasConstraints && (presentCount > 0 || absentCount > 0)) return { level: 'Hard', color: 'text-red-700 dark:text-red-400', bgClass: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400 border-red-300 dark:border-red-700' }
+    if (!hasConstraints && expressionLength >= 7) return { level: 'Extreme', color: 'text-purple-700 dark:text-purple-400', bgClass: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400 border-purple-300 dark:border-purple-700' }
+    return { level: 'Medium', color: 'text-amber-700 dark:text-amber-400', bgClass: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 border-amber-300 dark:border-amber-700' }
+  }, [rows, expressionLength])
+
+  // ─── Result Statistics (Task 15 - Feature 3) ──────────────────────────────
+
+  const resultStatistics = useMemo(() => {
+    if (!solveResult || solveResult.results.length === 0) return null
+
+    const results = solveResult.results
+    const equationCount = results.filter(e => e.includes('=') && !e.includes('>')).length
+    const comparisonCount = results.filter(e => e.includes('>')).length
+
+    // Operator distribution
+    const opCounts = new Map<string, number>()
+    const operators = ['+', '-', '*', '/', '%', '^', '!', 'A']
+    results.forEach(expr => {
+      operators.forEach(op => {
+        if (expr.includes(op)) opCounts.set(op, (opCounts.get(op) || 0) + 1)
+      })
+    })
+    const topOperators = Array.from(opCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([op, count]) => ({ op: API_TO_DISPLAY[op] || op, count, pct: (count / results.length) * 100 }))
+
+    // Length distribution
+    const lenCounts = new Map<number, number>()
+    results.forEach(expr => {
+      lenCounts.set(expr.length, (lenCounts.get(expr.length) || 0) + 1)
+    })
+    const lengthDist = Array.from(lenCounts.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([len, count]) => ({ len, count, pct: (count / results.length) * 100 }))
+
+    // Digit frequency
+    const digitCounts = new Map<string, number>()
+    '0123456789'.split('').forEach(d => digitCounts.set(d, 0))
+    results.forEach(expr => {
+      expr.split('').forEach(ch => {
+        if (/\d/.test(ch)) digitCounts.set(ch, (digitCounts.get(ch) || 0) + 1)
+      })
+    })
+    const digitFreq = Array.from(digitCounts.entries())
+      .map(([d, count]) => ({ digit: d, count, pct: results.length > 0 ? (count / results.length) * 100 : 0 }))
+
+    // Average result value (right side of equations)
+    let avgResult = 0
+    let resultCount = 0
+    results.forEach(expr => {
+      const eqIdx = expr.indexOf('=')
+      if (eqIdx >= 0) {
+        const rightSide = expr.substring(eqIdx + 1)
+        const val = parseInt(rightSide, 10)
+        if (!isNaN(val)) { avgResult += val; resultCount++ }
+      }
+    })
+    if (resultCount > 0) avgResult = avgResult / resultCount
+
+    return { total: results.length, equationCount, comparisonCount, topOperators, lengthDist, digitFreq, avgResult }
+  }, [solveResult])
+
+  // ─── Toggle Favorite Result (Task 15 - Feature 6) ────────────────────────
+
+  const toggleFavorite = useCallback((expr: string) => {
+    setFavoritedResults(prev => {
+      const next = new Set(prev)
+      if (next.has(expr)) next.delete(expr)
+      else next.add(expr)
+      return next
+    })
+  }, [])
+
+  // ─── Benchmark Mode (Task 15 - Feature 8) ────────────────────────────────
+
+  const handleBenchmark = useCallback(async () => {
+    if (benchmarkRunning || solving) return
+    setBenchmarkRunning(true)
+    setBenchmarkResult(null)
+
+    const times: number[] = []
+    const speeds: number[] = []
+
+    const apiRows = rows
+      .filter(row => row.some(t => t.char !== ''))
+      .map(row => row.map(tile => ({
+        char: DISPLAY_TO_API[tile.char] || tile.char,
+        state: tile.state === 'absent' ? 'empty' : tile.state,
+      })))
+
+    const body = {
+      length: expressionLength,
+      rows: apiRows.length > 0 ? apiRows : [Array(expressionLength).fill(null).map(() => ({ char: '', state: 'empty' }))],
+      mode: solveMode,
+      num_threads: health?.parallel_threads || undefined,
+      max_results: MAX_RESULTS_SAFE_CAP,
+    }
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        const endpoint = solveMode === 'sequential' ? '/api/solve/local' : '/api/solve/parallel'
+        const start = performance.now()
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const elapsed = performance.now() - start
+
+        if (res.ok) {
+          const text = await res.text()
+          try {
+            const data = JSON.parse(text) as Record<string, unknown>
+            if (data.success) {
+              const resultData = data.data as SolveResult
+              times.push(elapsed)
+              speeds.push(resultData.speed_per_sec)
+            }
+          } catch { /* skip failed parse */ }
+        }
+        // Small delay between runs
+        if (i < 2) await new Promise(r => setTimeout(r, 500))
+      }
+
+      if (times.length > 0) {
+        const avgTime = times.reduce((a, b) => a + b, 0) / times.length
+        const avgSpeed = speeds.reduce((a, b) => a + b, 0) / speeds.length
+        setBenchmarkResult({ times, speeds, avgTime, avgSpeed })
+      }
+    } catch {
+      // Silently fail benchmark
+    } finally {
+      setBenchmarkRunning(false)
+    }
+  }, [benchmarkRunning, solving, rows, expressionLength, solveMode, health])
+
+  // ─── Expression Breakdown for Tooltip (Task 15 - Feature 5) ──────────────
+
+  const getExpressionBreakdown = useCallback((expr: string) => {
+    const eqIdx = expr.indexOf('=')
+    const gtIdx = expr.indexOf('>')
+    const hasComparison = gtIdx >= 0
+    const sepIdx = eqIdx >= 0 ? eqIdx : gtIdx
+
+    const leftSide = sepIdx >= 0 ? expr.substring(0, sepIdx) : expr
+    const rightSide = sepIdx >= 0 ? expr.substring(sepIdx + 1) : ''
+    const separator = sepIdx >= 0 ? expr[sepIdx] : ''
+
+    const specialOps = ['!', '^', '[', ']', 'A', '%']
+    const hasSpecial = expr.split('').some(ch => specialOps.includes(ch))
+
+    // Character-by-character constraint match
+    const charMatches = expr.split('').map((ch, idx) => {
+      const apiCh = DISPLAY_TO_API[ch] || ch
+      const isCorrect = rows.some(row => row[idx]?.state === 'correct' && (DISPLAY_TO_API[row[idx].char] || row[idx].char) === apiCh && row[idx].char !== '')
+      const isPresent = rows.some(row => row.some((t, ci) => ci !== idx && t.state === 'present' && (DISPLAY_TO_API[t.char] || t.char) === apiCh && t.char !== ''))
+      const isAbsent = rows.some(row => row[idx]?.state === 'absent' && row[idx].char !== '' && (DISPLAY_TO_API[row[idx].char] || row[idx].char) === apiCh)
+      return isCorrect ? 'correct' as const : isPresent ? 'present' as const : isAbsent ? 'absent' as const : 'unknown' as const
+    })
+
+    return { leftSide, rightSide, separator, type: hasComparison ? 'Comparison' : 'Equation' as string, hasSpecial, charMatches }
+  }, [rows])
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1824,12 +2031,20 @@ export default function Home() {
                     ? 'bg-emerald-500'
                     : 'bg-red-500'
               }`} />
-              {solverOnline === null
-                ? 'Starting...'
-                : solverOnline
-                  ? `${health?.cpu_cores || '?'} cores · ${health?.parallel_threads || '?'} threads`
-                  : `Offline${solverLastChecked ? ` · ${Math.round((Date.now() - solverLastChecked) / 1000)}s ago` : ''}`
-              }
+              <span className="font-semibold">
+                {solverOnline === null
+                  ? '\ud83d\udfe1 Starting...'
+                  : solverOnline
+                    ? '\ud83d\udfe9 Online'
+                    : '\ud83d\udd34 Offline'
+                }
+              </span>
+              {solverOnline && health && (
+                <span className="text-[10px] opacity-70">{health.cpu_cores}c/{health.parallel_threads}t</span>
+              )}
+              {!solverOnline && solverOnline !== null && solverLastChecked > 0 && (
+                <span className="text-[10px] opacity-70">{Math.round((Date.now() - solverLastChecked) / 1000)}s ago</span>
+              )}
             </Badge>
             <Button
               variant="ghost"
@@ -1862,11 +2077,16 @@ export default function Home() {
           <div className="space-y-4">
 
             {/* Settings Card */}
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
             <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <MonitorSmartphone className="w-4 h-4 text-emerald-500" />
                   Puzzle Settings
+                  {/* Difficulty badge */}
+                  <Badge variant="outline" className={`ml-auto text-[10px] px-2 py-0.5 font-semibold border ${puzzleDifficulty.bgClass}`}>
+                    {puzzleDifficulty.level}
+                  </Badge>
                   {/* Undo/Redo buttons */}
                   <div className="ml-auto flex items-center gap-1">
                     <Button
@@ -1974,6 +2194,7 @@ export default function Home() {
                 </div>
               </CardContent>
             </Card>
+            </motion.div>
 
             {/* Presets */}
             <div className="flex flex-wrap gap-1.5">
@@ -2192,6 +2413,7 @@ export default function Home() {
             )}
 
             {/* Constraint Board */}
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: 0.05 }}>
             <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardHeader className="pb-3">
                 <div className="flex items-center gap-2">
@@ -2369,6 +2591,7 @@ export default function Home() {
                 </div>
               </CardContent>
             </Card>
+            </motion.div>
 
             {/* Constraint Conflict Warnings (Feature 3) */}
             {constraintConflicts.length > 0 && (
@@ -2438,11 +2661,22 @@ export default function Home() {
             })()}
 
             {/* Keyboard */}
+            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: 0.1 }}>
             <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
               <CardContent className="pt-5">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
                   <div className="flex items-center gap-1.5">
+                    {/* Keyboard layout toggle (Task 15 - Feature 7) */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={`h-6 px-1.5 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-emerald-500 ${keyboardLayout === 'compact' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30' : 'text-zinc-400'}`}
+                      onClick={() => setKeyboardLayout(keyboardLayout === 'standard' ? 'compact' : 'standard')}
+                      title="Toggle keyboard layout"
+                    >
+                      {keyboardLayout === 'standard' ? 'Std' : 'Cmp'}
+                    </Button>
                     {/* Sound toggle (Feature 6) */}
                     <Button
                       variant="ghost"
@@ -2472,7 +2706,7 @@ export default function Home() {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {KEYBOARD_CHARS.map((line, lineIdx) => (
+                  {activeKeyboardLayout.map((line, lineIdx) => (
                     <div key={lineIdx} className="flex justify-center gap-1 p-1.5 rounded-lg bg-zinc-50/50 dark:bg-zinc-800/30 border border-zinc-100 dark:border-zinc-800/50">
                       {line.map((key) => {
                         const keyState = keyboardKeyStates.get(key)
@@ -2539,6 +2773,7 @@ export default function Home() {
                 />
               </CardContent>
             </Card>
+            </motion.div>
 
             {/* Constraint validation warnings */}
             {(() => {
@@ -2581,7 +2816,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) */}
+            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) + Benchmark (Task 15) */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-zinc-500 dark:text-zinc-400">Mode:</span>
@@ -2605,6 +2840,18 @@ export default function Home() {
                 />
                 <Wand2 className={`w-3.5 h-3.5 ${autoSolve ? 'text-emerald-500' : 'text-zinc-300 dark:text-zinc-600'}`} />
               </div>
+              {/* Benchmark button (Task 15 - Feature 8) */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500"
+                onClick={handleBenchmark}
+                disabled={benchmarkRunning || solving}
+                title="Run 3 consecutive solves to benchmark performance"
+              >
+                {benchmarkRunning ? <RefreshCw className="w-3 h-3 mr-1 animate-spin" /> : <Flame className="w-3 h-3 mr-1" />}
+                Benchmark
+              </Button>
             </div>
 
             {/* Solve Button - with gradient border effect + shortcut badge + mode badge */}
@@ -2644,6 +2891,51 @@ export default function Home() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+
+            {/* Benchmark Result Card (Task 15 - Feature 8) */}
+            {benchmarkResult && (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+              <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 border-amber-200 dark:border-amber-800">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Flame className="w-4 h-4 text-amber-500" />
+                      Benchmark Results
+                    </CardTitle>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setBenchmarkResult(null)}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  <CardDescription>3 consecutive solve runs</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="text-center p-2 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/50">
+                      <div className="text-lg font-bold text-amber-700 dark:text-amber-400">{benchmarkResult.avgTime < 1000 ? `${benchmarkResult.avgTime.toFixed(0)}ms` : `${(benchmarkResult.avgTime / 1000).toFixed(2)}s`}</div>
+                      <div className="text-[9px] text-zinc-500 uppercase">Avg Time</div>
+                    </div>
+                    <div className="text-center p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50">
+                      <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400">{formatSpeed(benchmarkResult.avgSpeed)}</div>
+                      <div className="text-[9px] text-zinc-500 uppercase">Avg Speed</div>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    {benchmarkResult.times.map((t, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs p-1.5 rounded bg-zinc-50 dark:bg-zinc-800/50">
+                        <span className="text-zinc-500">Run {i + 1}</span>
+                        <span className="font-mono font-bold">{t < 1000 ? `${t.toFixed(0)}ms` : `${(t / 1000).toFixed(2)}s`}</span>
+                        <span className="text-zinc-400 font-mono">{formatSpeed(benchmarkResult.speeds[i])}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-zinc-400 mt-2 px-1">
+                    <span>Min: {Math.min(...benchmarkResult.times).toFixed(0)}ms</span>
+                    <span>Max: {Math.max(...benchmarkResult.times).toFixed(0)}ms</span>
+                  </div>
+                </CardContent>
+              </Card>
+              </motion.div>
             )}
           </div>
 
@@ -2689,6 +2981,7 @@ export default function Home() {
 
             {/* Stats Card */}
             {(solveResult || health || persistedStats.totalSolves > 0) && (
+              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
               <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -2843,6 +3136,7 @@ export default function Home() {
                   )}
                 </CardContent>
               </Card>
+              </motion.div>
             )}
 
             {/* Solving Progress */}
@@ -2866,6 +3160,7 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
               <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80 relative overflow-hidden">
                 {/* Confetti (Feature 4) */}
                 {showConfetti && solveResult.results.length === 1 && (
@@ -2951,6 +3246,7 @@ export default function Home() {
                       <TabsTrigger value="solutions" className="flex-1">Solutions</TabsTrigger>
                       <TabsTrigger value="probabilities" className="flex-1">Probabilities</TabsTrigger>
                       <TabsTrigger value="recommended" className="flex-1">Best</TabsTrigger>
+                      <TabsTrigger value="statistics" className="flex-1">Stats</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="solutions" aria-live="polite">
@@ -2987,7 +3283,7 @@ export default function Home() {
 
                       {solveResult.results.length > 1 && (
                         <div className="space-y-2 mt-2">
-                          {/* Search/Filter + Sort + Download */}
+                          {/* Search/Filter + Sort + Favorites + Download */}
                           <div className="flex gap-2">
                             <div className="relative flex-1">
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400" />
@@ -3008,6 +3304,18 @@ export default function Home() {
                                 </Button>
                               )}
                             </div>
+                            {/* Favorites toggle (Task 15 - Feature 6) */}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className={`h-8 px-2 focus-visible:ring-2 focus-visible:ring-emerald-500 ${showFavoritesOnly ? 'text-amber-600 border-amber-300 dark:text-amber-400 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20' : ''}`}
+                              onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                              title={showFavoritesOnly ? 'Show all results' : 'Show favorites only'}
+                              disabled={favoritedResults.size === 0}
+                            >
+                              <Star className={`w-3.5 h-3.5 mr-1 ${showFavoritesOnly ? 'fill-amber-400 text-amber-400' : ''}`} />
+                              {favoritedResults.size > 0 && <span className="text-[10px]">{favoritedResults.size}</span>}
+                            </Button>
                             <select
                               className="h-8 text-xs border border-zinc-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 px-2 text-zinc-600 dark:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500"
                               value={resultSort}
@@ -3085,18 +3393,32 @@ export default function Home() {
                             {filteredResults.slice(0, displayLimit).map((expr, idx) => {
                               const isRecommended = expr === solveResult.recommended
                               const exprType = getExpressionType(expr)
+                              const isFavorited = favoritedResults.has(expr)
+                              const isHovered = hoveredResult === expr
                               return (
                                 <div
                                   key={idx}
-                                  className={`flex items-center gap-2 p-2 transition-colors group
+                                  className={`flex items-center gap-2 p-2 transition-colors group relative
                                     ${idx % 2 === 0 ? 'bg-white dark:bg-zinc-900' : 'bg-zinc-50 dark:bg-zinc-800/30'}
                                     hover:bg-emerald-50 dark:hover:bg-emerald-950/20
                                     ${isRecommended
                                       ? '!bg-amber-50 dark:!bg-amber-950/20 border-l-2 border-l-amber-400 dark:border-l-amber-600'
                                       : ''
                                     }
+                                    ${isFavorited ? '!bg-emerald-50/50 dark:!bg-emerald-950/10' : ''}
                                   `}
+                                  onMouseEnter={() => setHoveredResult(expr)}
+                                  onMouseLeave={() => setHoveredResult(null)}
                                 >
+                                  {/* Favorite star (Task 15 - Feature 6) */}
+                                  <button
+                                    className={`shrink-0 transition-opacity focus-visible:ring-2 focus-visible:ring-emerald-500 rounded ${isFavorited ? 'opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'}`}
+                                    onClick={() => toggleFavorite(expr)}
+                                    title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                    aria-label={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+                                  >
+                                    <Star className={`w-3.5 h-3.5 ${isFavorited ? 'fill-amber-400 text-amber-400' : 'text-zinc-400'}`} />
+                                  </button>
                                   <span className="text-xs text-zinc-400 w-8 text-right font-mono group-hover:text-zinc-600 dark:group-hover:text-zinc-300">{idx + 1}</span>
                                   <code
                                     className="font-mono font-bold text-sm flex-1 tracking-wider group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors cursor-pointer"
@@ -3138,6 +3460,57 @@ export default function Home() {
                                   >
                                     <Eye className="w-3 h-3" />
                                   </Button>
+                                  {/* Expression Breakdown Tooltip (Task 15 - Feature 5) */}
+                                  {isHovered && (
+                                    <div className="absolute left-4 top-full mt-1 z-50 p-3 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-xl text-xs min-w-[200px] animate-in fade-in duration-150">
+                                      {(() => {
+                                        const bd = getExpressionBreakdown(expr)
+                                        return (
+                                          <>
+                                            <div className="flex items-center gap-2 mb-2">
+                                              <Badge variant="outline" className={`text-[9px] px-1.5 py-0 ${bd.type === 'Equation' ? 'border-emerald-300 text-emerald-600 dark:border-emerald-700 dark:text-emerald-400' : 'border-cyan-300 text-cyan-600 dark:border-cyan-700 dark:text-cyan-400'}`}>
+                                                {bd.type}
+                                              </Badge>
+                                              {bd.hasSpecial && (
+                                                <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-amber-300 text-amber-600 dark:border-amber-700 dark:text-amber-400">
+                                                  Special ops
+                                                </Badge>
+                                              )}
+                                            </div>
+                                            <div className="flex items-center gap-1 flex-wrap">
+                                              <span className="text-zinc-500">L:</span>
+                                              {bd.leftSide.split('').map((ch, i) => {
+                                                const match = bd.charMatches[i]
+                                                return (
+                                                  <span key={`l-${i}`} className={`w-5 h-5 rounded text-center font-mono font-bold text-[10px] leading-5 ${
+                                                    match === 'correct' ? 'bg-emerald-200 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300' :
+                                                    match === 'present' ? 'bg-amber-200 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300' :
+                                                    match === 'absent' ? 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400' :
+                                                    'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                                                  }`}>{API_TO_DISPLAY[ch] || ch}</span>
+                                                )
+                                              })}
+                                              {bd.separator && (
+                                                <span className="font-black text-emerald-600 dark:text-emerald-400 mx-0.5">{bd.separator}</span>
+                                              )}
+                                              {bd.rightSide && bd.rightSide.split('').map((ch, i) => {
+                                                const matchIdx = bd.leftSide.length + (bd.separator ? 1 : 0) + i
+                                                const match = bd.charMatches[matchIdx]
+                                                return (
+                                                  <span key={`r-${i}`} className={`w-5 h-5 rounded text-center font-mono font-bold text-[10px] leading-5 ${
+                                                    match === 'correct' ? 'bg-emerald-200 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300' :
+                                                    match === 'present' ? 'bg-amber-200 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300' :
+                                                    match === 'absent' ? 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400' :
+                                                    'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                                                  }`}>{API_TO_DISPLAY[ch] || ch}</span>
+                                                )
+                                              })}
+                                            </div>
+                                          </>
+                                        )
+                                      })()}
+                                    </div>
+                                  )}
                                 </div>
                               )
                             })}
@@ -3251,9 +3624,100 @@ export default function Home() {
                         </p>
                       )}
                     </TabsContent>
+
+                    {/* Statistics Tab (Task 15 - Feature 3) */}
+                    <TabsContent value="statistics">
+                      {resultStatistics ? (
+                        <div className="space-y-4 mt-2">
+                          {/* Summary row */}
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="text-center p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/50">
+                              <Hash className="w-3.5 h-3.5 mx-auto mb-1 text-emerald-500" />
+                              <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400">{resultStatistics.total.toLocaleString()}</div>
+                              <div className="text-[9px] text-zinc-500 uppercase">Total</div>
+                            </div>
+                            <div className="text-center p-2.5 rounded-xl bg-teal-50 dark:bg-teal-950/20 border border-teal-100 dark:border-teal-900/50">
+                              <div className="text-lg font-bold text-teal-700 dark:text-teal-400">{resultStatistics.equationCount.toLocaleString()}</div>
+                              <div className="text-[9px] text-zinc-500 uppercase">Equations</div>
+                            </div>
+                            <div className="text-center p-2.5 rounded-xl bg-cyan-50 dark:bg-cyan-950/20 border border-cyan-100 dark:border-cyan-900/50">
+                              <div className="text-lg font-bold text-cyan-700 dark:text-cyan-400">{resultStatistics.comparisonCount.toLocaleString()}</div>
+                              <div className="text-[9px] text-zinc-500 uppercase">Comparisons</div>
+                            </div>
+                          </div>
+
+                          {/* Operator distribution */}
+                          {resultStatistics.topOperators.length > 0 && (
+                            <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                              <div className="flex items-center gap-1.5 mb-2">
+                                <BarChart2 className="w-3.5 h-3.5 text-emerald-500" />
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Top Operators</span>
+                              </div>
+                              <div className="space-y-1.5">
+                                {resultStatistics.topOperators.map(op => (
+                                  <div key={op.op} className="flex items-center gap-2">
+                                    <span className="w-6 text-center font-mono font-bold text-sm">{op.op}</span>
+                                    <div className="flex-1 h-4 bg-zinc-100 dark:bg-zinc-700 rounded overflow-hidden">
+                                      <div className="h-full rounded bg-gradient-to-r from-emerald-400 to-teal-500 transition-all duration-500" style={{ width: `${op.pct}%` }} />
+                                    </div>
+                                    <span className="text-[10px] text-zinc-500 w-14 text-right font-mono">{op.pct.toFixed(1)}%</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Length distribution */}
+                          {resultStatistics.lengthDist.length > 1 && (
+                            <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                              <div className="flex items-center gap-1.5 mb-2">
+                                <BarChart3 className="w-3.5 h-3.5 text-teal-500" />
+                                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Length Distribution</span>
+                              </div>
+                              <div className="flex items-end gap-1.5 h-16">
+                                {resultStatistics.lengthDist.map(ld => (
+                                  <div key={ld.len} className="flex-1 flex flex-col items-center gap-0.5">
+                                    <span className="text-[8px] text-zinc-400 font-mono">{ld.pct.toFixed(0)}%</span>
+                                    <div className="w-full rounded-sm bg-gradient-to-t from-teal-500 to-emerald-400 transition-all duration-500" style={{ height: `${Math.max(8, ld.pct)}%` }} title={`Len ${ld.len}: ${ld.count}`} />
+                                    <span className="text-[8px] text-zinc-500 font-mono">{ld.len}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Digit frequency */}
+                          <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                            <div className="flex items-center gap-1.5 mb-2">
+                              <Hash className="w-3.5 h-3.5 text-amber-500" />
+                              <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">Digit Frequency</span>
+                            </div>
+                            <div className="grid grid-cols-5 gap-1.5">
+                              {resultStatistics.digitFreq.map(df => (
+                                <div key={df.digit} className="text-center p-1.5 rounded-lg bg-white dark:bg-zinc-800 border border-zinc-100 dark:border-zinc-700">
+                                  <div className="text-sm font-mono font-bold">{df.digit}</div>
+                                  <div className="text-[9px] text-zinc-500">{df.pct.toFixed(0)}%</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Average result value */}
+                          {resultStatistics.avgResult > 0 && (
+                            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/50 text-center">
+                              <span className="text-[10px] text-amber-600 dark:text-amber-400 uppercase tracking-wider font-medium">Avg Result Value</span>
+                              <div className="text-xl font-bold text-amber-700 dark:text-amber-300 mt-0.5">{resultStatistics.avgResult.toFixed(1)}</div>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center py-6">No statistics available.</p>
+                      )}
+                    </TabsContent>
                   </Tabs>
                 </CardContent>
               </Card>
+              </motion.div>
             )}
 
             {/* Result Expression Visualizer */}

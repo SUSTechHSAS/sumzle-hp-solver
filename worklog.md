@@ -1256,3 +1256,108 @@ Unresolved Issues / Risks:
 5. Add game timer mode (timed challenge)
 6. Add puzzle of the day feature
 7. Implement multi-network computing node functionality
+
+---
+
+## Task ID: 15
+**Agent**: Full-Stack Developer
+**Task**: Add 8 new features to Sumzle HP Solver frontend
+
+### Work Log:
+
+1. **Explicit "Online" Status Label (Feature 1)**: Updated the solver status badge in the header to show explicit text labels:
+   - "🟢 Online" with core/thread count when solverOnline === true
+   - "🟡 Starting..." when solverOnline === null
+   - "🔴 Offline" with seconds-since-check when solverOnline === false
+   - Status text is now bold (`font-semibold`) with secondary info in smaller opacity text
+   - Cores/threads shown as compact `4c/4t` format
+
+2. **Puzzle Difficulty Indicator (Feature 2)**: Added a color-coded difficulty badge in the Puzzle Settings card header:
+   - `puzzleDifficulty` useMemo calculates difficulty based on correct/present/absent constraint counts and expression length
+   - Easy (green): 3+ correct constraints
+   - Medium (amber): 1-2 correct + some present/absent, or default
+   - Hard (red): Only present/absent constraints, no correct
+   - Extreme (purple): No constraints + expression length >= 7
+   - Badge uses `ml-auto` positioning before undo/redo buttons
+
+3. **Result Statistics Card (Feature 3)**: Added a "Stats" tab alongside Solutions/Probabilities/Best:
+   - `resultStatistics` useMemo computes: total count, equation vs comparison counts, top 5 operator distribution with mini bar charts, length distribution with visual bars, digit frequency grid (0-9), average result value
+   - Summary row: Total / Equations / Comparisons in 3-column grid
+   - Operator distribution: horizontal bar chart with gradient colors
+   - Length distribution: vertical bar chart with percentage labels
+   - Digit frequency: 5-column grid with per-digit percentage
+   - Average result value: highlighted card with amber styling
+
+4. **Animated Page Transitions with Framer Motion (Feature 4)**: Wrapped major content sections with `motion.div`:
+   - Settings Card: `initial={{ opacity: 0, y: 12 }}` → `animate={{ opacity: 1, y: 0 }}`, 250ms
+   - Constraint Board: same animation with 50ms delay
+   - Keyboard Card: same with 100ms delay
+   - Engine Stats Card: same with no delay
+   - Results Card: `initial={{ opacity: 0, y: 20 }}` for slide-in-from-bottom effect, 300ms
+   - Benchmark Result Card: same slide-in effect, 300ms
+   - All transitions are subtle (200-300ms) with no bouncy effects
+
+5. **Enhanced Result Card - Expression Breakdown (Feature 5)**: Added hover tooltip on each result item:
+   - `getExpressionBreakdown` callback computes: left side, right side, separator, type (Equation/Comparison), hasSpecial (uses !, ^, [], A, %), charMatches (per-character constraint match status)
+   - Tooltip appears on hover below the result row with `animate-in fade-in duration-150`
+   - Shows type badge (Equation/Comparison), Special ops badge if applicable
+   - Character-by-character breakdown with color-coded tiles: correct=green, present=amber, absent=gray, unknown=light gray
+   - `hoveredResult` state tracks which result is currently hovered
+
+6. **Bookmark/Favorite Results (Feature 6)**: Added star/favorite functionality:
+   - Star icon button next to each result (appears on hover, stays visible when favorited)
+   - `favoritedResults` Set<string> state tracks favorited expressions
+   - `toggleFavorite` callback adds/removes from set
+   - Favorited results have subtle emerald background highlight
+   - "Favorites" toggle button in the filter bar with amber styling when active
+   - Badge shows favorite count
+   - `filteredResults` updated to filter by favorites when `showFavoritesOnly` is true
+   - Favorites reset on new solve (component state only)
+
+7. **Keyboard Layout Toggle (Feature 7)**: Added toggle between Standard and Compact layouts:
+   - `keyboardLayout` state: 'standard' | 'compact' (default 'standard')
+   - `COMPACT_KEYBOARD_CHARS` constant: digits row + basic operators (no %^=>()![]A)
+   - Toggle button "Std"/"Cmp" in keyboard header bar
+   - `activeKeyboardLayout` computed from state
+   - Keyboard renders `activeKeyboardLayout` instead of hardcoded `KEYBOARD_CHARS`
+   - Active layout shown with emerald styling
+
+8. **Solver Benchmark Mode (Feature 8)**: Added benchmark button and result card:
+   - "Benchmark" button (Flame icon) next to Auto-solve toggle in solve options
+   - `handleBenchmark` callback: runs 3 consecutive solves, records times and speeds
+   - Uses `performance.now()` for accurate timing
+   - 500ms delay between runs to avoid overloading
+   - `benchmarkResult` state: { times, speeds, avgTime, avgSpeed }
+   - `benchmarkRunning` state prevents concurrent benchmarks
+   - Benchmark Result Card: shows avg time and speed in 2-column grid, per-run breakdown, min/max times
+   - Card appears with motion.div slide-in animation
+   - Dismissible with X button
+
+### New State Variables:
+- `keyboardLayout: 'standard' | 'compact'`
+- `favoritedResults: Set<string>`
+- `showFavoritesOnly: boolean`
+- `benchmarkResult: { times: number[], speeds: number[], avgTime: number, avgSpeed: number } | null`
+- `benchmarkRunning: boolean`
+- `hoveredResult: string | null`
+
+### New Imports:
+- `motion` from `framer-motion`
+- `Star`, `Flame`, `BarChart2` from `lucide-react`
+
+### New Memos/Handlers:
+- `puzzleDifficulty` - calculates difficulty level
+- `resultStatistics` - computes result analytics
+- `toggleFavorite` - toggles favorite status
+- `handleBenchmark` - runs benchmark mode
+- `getExpressionBreakdown` - computes tooltip data
+- `activeKeyboardLayout` - computed keyboard layout
+- `COMPACT_KEYBOARD_CHARS` - compact keyboard constant
+
+### Stage Summary:
+- All 8 features implemented in `src/app/page.tsx`
+- File grew from ~3535 to ~3999 lines
+- Lint passes clean with no errors
+- All existing functionality preserved
+- No changes to Rust backend or API route
+- `filteredResults` updated to support favorites filtering
