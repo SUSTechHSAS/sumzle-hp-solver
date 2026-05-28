@@ -18,7 +18,7 @@ import {
   X, ArrowRight, Sparkles, Clock, Hash, Search, History, Info,
   Target, HelpCircle, AlertTriangle, Download, Lightbulb, TrendingUp,
   Undo2, Redo2, ArrowUp, ArrowDown, GripVertical, Share2, ExternalLink, Eye,
-  Volume2, VolumeX, CopyPlus, Wand2, Star, Flame, BarChart2
+  Volume2, VolumeX, CopyPlus, Wand2
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -304,25 +304,6 @@ export default function Home() {
 
   // Keyboard active key for ripple (Feature 10)
   const [activeKey, setActiveKey] = useState<string | null>(null)
-
-  // Keyboard layout toggle (standard/compact)
-  const [keyboardLayout, setKeyboardLayout] = useState<'standard' | 'compact'>('standard')
-
-  // Favorited results (Task 15 - Feature 6)
-  const [favoritedResults, setFavoritedResults] = useState<Set<string>>(new Set())
-  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
-
-  // Benchmark mode (Task 15 - Feature 8)
-  const [benchmarkResult, setBenchmarkResult] = useState<{
-    times: number[]
-    speeds: number[]
-    avgTime: number
-    avgSpeed: number
-  } | null>(null)
-  const [benchmarkRunning, setBenchmarkRunning] = useState(false)
-
-  // Hovered result for breakdown tooltip (Task 15 - Feature 5)
-  const [hoveredResult, setHoveredResult] = useState<string | null>(null)
 
   // Mobile keyboard auto-open
   const mobileInputRef = useRef<HTMLInputElement>(null)
@@ -2667,16 +2648,6 @@ export default function Home() {
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs text-zinc-500 dark:text-zinc-400">On-Screen Keyboard</span>
                   <div className="flex items-center gap-1.5">
-                    {/* Keyboard layout toggle (Task 15 - Feature 7) */}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className={`h-6 px-1.5 text-[10px] font-medium focus-visible:ring-2 focus-visible:ring-emerald-500 ${keyboardLayout === 'compact' ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30' : 'text-zinc-400'}`}
-                      onClick={() => setKeyboardLayout(keyboardLayout === 'standard' ? 'compact' : 'standard')}
-                      title="Toggle keyboard layout"
-                    >
-                      {keyboardLayout === 'standard' ? 'Std' : 'Cmp'}
-                    </Button>
                     {/* Sound toggle (Feature 6) */}
                     <Button
                       variant="ghost"
@@ -2706,7 +2677,7 @@ export default function Home() {
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {activeKeyboardLayout.map((line, lineIdx) => (
+                  {KEYBOARD_CHARS.map((line, lineIdx) => (
                     <div key={lineIdx} className="flex justify-center gap-1 p-1.5 rounded-lg bg-zinc-50/50 dark:bg-zinc-800/30 border border-zinc-100 dark:border-zinc-800/50">
                       {line.map((key) => {
                         const keyState = keyboardKeyStates.get(key)
@@ -2816,7 +2787,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) + Benchmark (Task 15) */}
+            {/* Solve Mode Selector (Feature 5) + Auto-Solve Toggle (Feature 8) */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-xs text-zinc-500 dark:text-zinc-400">Mode:</span>
@@ -2840,18 +2811,6 @@ export default function Home() {
                 />
                 <Wand2 className={`w-3.5 h-3.5 ${autoSolve ? 'text-emerald-500' : 'text-zinc-300 dark:text-zinc-600'}`} />
               </div>
-              {/* Benchmark button (Task 15 - Feature 8) */}
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs focus-visible:ring-2 focus-visible:ring-emerald-500"
-                onClick={handleBenchmark}
-                disabled={benchmarkRunning || solving}
-                title="Run 3 consecutive solves to benchmark performance"
-              >
-                {benchmarkRunning ? <RefreshCw className="w-3 h-3 mr-1 animate-spin" /> : <Flame className="w-3 h-3 mr-1" />}
-                Benchmark
-              </Button>
             </div>
 
             {/* Solve Button - with gradient border effect + shortcut badge + mode badge */}
@@ -2981,7 +2940,6 @@ export default function Home() {
 
             {/* Stats Card */}
             {(solveResult || health || persistedStats.totalSolves > 0) && (
-              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
               <Card className="shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
@@ -3160,7 +3118,6 @@ export default function Home() {
 
             {/* Results */}
             {solveResult && (
-              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
               <Card className="animate-in slide-in-from-bottom-4 duration-500 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50 dark:bg-gradient-to-br dark:from-zinc-900 dark:to-zinc-950/80 relative overflow-hidden">
                 {/* Confetti (Feature 4) */}
                 {showConfetti && solveResult.results.length === 1 && (
@@ -3460,57 +3417,6 @@ export default function Home() {
                                   >
                                     <Eye className="w-3 h-3" />
                                   </Button>
-                                  {/* Expression Breakdown Tooltip (Task 15 - Feature 5) */}
-                                  {isHovered && (
-                                    <div className="absolute left-4 top-full mt-1 z-50 p-3 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-xl text-xs min-w-[200px] animate-in fade-in duration-150">
-                                      {(() => {
-                                        const bd = getExpressionBreakdown(expr)
-                                        return (
-                                          <>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <Badge variant="outline" className={`text-[9px] px-1.5 py-0 ${bd.type === 'Equation' ? 'border-emerald-300 text-emerald-600 dark:border-emerald-700 dark:text-emerald-400' : 'border-cyan-300 text-cyan-600 dark:border-cyan-700 dark:text-cyan-400'}`}>
-                                                {bd.type}
-                                              </Badge>
-                                              {bd.hasSpecial && (
-                                                <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-amber-300 text-amber-600 dark:border-amber-700 dark:text-amber-400">
-                                                  Special ops
-                                                </Badge>
-                                              )}
-                                            </div>
-                                            <div className="flex items-center gap-1 flex-wrap">
-                                              <span className="text-zinc-500">L:</span>
-                                              {bd.leftSide.split('').map((ch, i) => {
-                                                const match = bd.charMatches[i]
-                                                return (
-                                                  <span key={`l-${i}`} className={`w-5 h-5 rounded text-center font-mono font-bold text-[10px] leading-5 ${
-                                                    match === 'correct' ? 'bg-emerald-200 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300' :
-                                                    match === 'present' ? 'bg-amber-200 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300' :
-                                                    match === 'absent' ? 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400' :
-                                                    'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
-                                                  }`}>{API_TO_DISPLAY[ch] || ch}</span>
-                                                )
-                                              })}
-                                              {bd.separator && (
-                                                <span className="font-black text-emerald-600 dark:text-emerald-400 mx-0.5">{bd.separator}</span>
-                                              )}
-                                              {bd.rightSide && bd.rightSide.split('').map((ch, i) => {
-                                                const matchIdx = bd.leftSide.length + (bd.separator ? 1 : 0) + i
-                                                const match = bd.charMatches[matchIdx]
-                                                return (
-                                                  <span key={`r-${i}`} className={`w-5 h-5 rounded text-center font-mono font-bold text-[10px] leading-5 ${
-                                                    match === 'correct' ? 'bg-emerald-200 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300' :
-                                                    match === 'present' ? 'bg-amber-200 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300' :
-                                                    match === 'absent' ? 'bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400' :
-                                                    'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
-                                                  }`}>{API_TO_DISPLAY[ch] || ch}</span>
-                                                )
-                                              })}
-                                            </div>
-                                          </>
-                                        )
-                                      })()}
-                                    </div>
-                                  )}
                                 </div>
                               )
                             })}
@@ -3718,6 +3624,95 @@ export default function Home() {
                 </CardContent>
               </Card>
               </motion.div>
+            )}
+
+            {/* Result Expression Visualizer */}
+            {selectedResultExpr && visualizeExpression && (
+              <Card className="animate-in slide-in-from-bottom-2 duration-200 shadow-md shadow-zinc-200/50 dark:shadow-zinc-900/50">
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-teal-500" />
+                      Expression Visualizer
+                    </CardTitle>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 focus-visible:ring-2 focus-visible:ring-emerald-500" onClick={() => setSelectedResultExpr(null)}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                  <CardDescription>Visual breakdown of the expression</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-center gap-2 flex-wrap p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50">
+                    {/* Left side of expression */}
+                    <div className="flex gap-0.5">
+                      {visualizeExpression.leftChars.map((ch, i) => {
+                        const displayCh = API_TO_DISPLAY[ch] || ch
+                        const isDigit = /\d/.test(ch)
+                        const isOp = ['+', '-', '*', '/', '%', '^', '!', 'A'].includes(ch)
+                        return (
+                          <span
+                            key={`l-${i}`}
+                            className={`w-9 h-9 rounded-lg border-2 flex items-center justify-center font-mono font-bold text-sm transition-all
+                              ${isDigit
+                                ? 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-700'
+                                : isOp
+                                  ? 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-400 dark:border-amber-700'
+                                  : 'bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-600'
+                              }`}
+                          >
+                            {displayCh}
+                          </span>
+                        )
+                      })}
+                    </div>
+                    {/* Separator (= or >) */}
+                    {visualizeExpression.separator && (
+                      <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 px-2">
+                        {visualizeExpression.separator}
+                      </span>
+                    )}
+                    {/* Right side of expression */}
+                    {visualizeExpression.rightChars.length > 0 && (
+                      <div className="flex gap-0.5">
+                        {visualizeExpression.rightChars.map((ch, i) => {
+                          const displayCh = API_TO_DISPLAY[ch] || ch
+                          const isDigit = /\d/.test(ch)
+                          const isOp = ['+', '-', '*', '/', '%', '^', '!', 'A'].includes(ch)
+                          return (
+                            <span
+                              key={`r-${i}`}
+                              className={`w-9 h-9 rounded-lg border-2 flex items-center justify-center font-mono font-bold text-sm transition-all
+                                ${isDigit
+                                  ? 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-700'
+                                  : isOp
+                                    ? 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/40 dark:text-amber-400 dark:border-amber-700'
+                                    : 'bg-zinc-100 text-zinc-700 border-zinc-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-600'
+                                }`}
+                            >
+                              {displayCh}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  {/* Legend */}
+                  <div className="flex items-center justify-center gap-4 mt-3 text-xs text-zinc-500">
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-emerald-100 dark:bg-emerald-900/40 border border-emerald-300 dark:border-emerald-700" />
+                      Digits
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-amber-100 dark:bg-amber-900/40 border border-amber-300 dark:border-amber-700" />
+                      Operators
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-4 h-4 rounded bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600" />
+                      Symbols
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
             )}
 
             {/* Result Expression Visualizer */}
